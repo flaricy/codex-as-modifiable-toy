@@ -80,6 +80,7 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
             r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
             r#"(?:Process running with session ID (?P<process_id>-?\d+)\n)?"#,
             r#"(?:Original token count: (?P<original_token_count>\d+)\n)?"#,
+            r#"(?:Completion notification registered; do not poll this session\.\n)?"#,
             r#"Output:\n?(?P<output>.*)$"#,
         ))
         .expect("valid unified exec output regex")
@@ -3514,6 +3515,180 @@ async fn write_stdin_calls_run_in_parallel_across_sessions() -> Result<()> {
     assert_regex_match(".*alpha-ready.*", &outputs["cross-a"].output);
     assert_regex_match(".*beta-ready.*", &outputs["cross-b"].output);
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_on_exit_wakes_idle_turn_once() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX sleep command");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let call_id = "uexec-on-exit-wake";
+    let args = json!({
+        "cmd": "sleep 1.5; printf 'WAKE-COMPLETE'",
+        "yield_time_ms": 250,
+        "on_exit": "wake",
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_assistant_message("msg-1", "waiting for completion"),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_assistant_message("msg-2", "completion received"),
+            ev_completed("resp-3"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "wake this turn when the command exits",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let mut completed_turns = 0;
+    while completed_turns < 2 {
+        let event = wait_for_event(&test.codex, |_| true).await;
+        if matches!(event, EventMsg::TurnComplete(_)) {
+            completed_turns += 1;
+        }
+    }
+
+    let bodies = request_log
+        .requests()
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+    assert_eq!(bodies.len(), 3, "expected one automatic completion turn");
+
+    let tool_result_request = bodies[1].to_string();
+    assert!(
+        tool_result_request
+            .contains("Completion notification registered; do not poll this session."),
+        "initial tool output should confirm wake registration: {tool_result_request}"
+    );
+
+    let completion_request = bodies[2].to_string();
+    for expected in [
+        "<exec_command_completion>",
+        "</exec_command_completion>",
+        "uexec-on-exit-wake",
+        "WAKE-COMPLETE",
+        "exit_code",
+    ] {
+        assert!(
+            completion_request.contains(expected),
+            "automatic turn missing {expected:?}: {completion_request}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_write_stdin_suppresses_on_exit_wake_while_running() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX sleep command");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let start_call_id = "uexec-on-exit-observed";
+    let write_call_id = "uexec-on-exit-write";
+    let start_args = json!({
+        "cmd": "sleep 3; printf 'MANUAL-COMPLETE'",
+        "yield_time_ms": 250,
+        "tty": true,
+        "on_exit": "wake",
+    });
+    let write_args = json!({
+        "chars": "\n",
+        "session_id": 1000,
+        "yield_time_ms": 250,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                start_call_id,
+                "exec_command",
+                &serde_json::to_string(&start_args)?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_function_call(
+                write_call_id,
+                "write_stdin",
+                &serde_json::to_string(&write_args)?,
+            ),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_assistant_message("msg-1", "observed manually"),
+            ev_completed("resp-3"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "observe the background command manually",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let bodies = request_log
+        .requests()
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "manual write_stdin observation must suppress the automatic completion turn"
+    );
+
+    let outputs = collect_tool_outputs(&bodies)?;
+    let write_output = outputs
+        .get(write_call_id)
+        .expect("missing write_stdin output");
+    assert!(
+        write_output.process_id.is_some(),
+        "write_stdin should observe the process while it is still running"
+    );
     Ok(())
 }
 

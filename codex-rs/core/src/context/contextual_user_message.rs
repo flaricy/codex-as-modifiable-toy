@@ -3,6 +3,7 @@ use codex_protocol::items::parse_hook_prompt_fragment;
 use codex_protocol::models::ContentItem;
 
 use super::AdditionalContextUserFragment;
+use super::ExecCommandCompletion;
 use super::FragmentRegistration;
 use super::FragmentRegistrationProxy;
 use super::InternalModelContextFragment;
@@ -31,6 +32,8 @@ static TURN_ABORTED_REGISTRATION: FragmentRegistrationProxy<TurnAborted> =
     FragmentRegistrationProxy::new();
 static SUBAGENT_NOTIFICATION_REGISTRATION: FragmentRegistrationProxy<SubagentNotification> =
     FragmentRegistrationProxy::new();
+static EXEC_COMMAND_COMPLETION_REGISTRATION: FragmentRegistrationProxy<ExecCommandCompletion> =
+    FragmentRegistrationProxy::new();
 static INTERNAL_MODEL_CONTEXT_REGISTRATION: FragmentRegistrationProxy<
     InternalModelContextFragment,
 > = FragmentRegistrationProxy::new();
@@ -54,6 +57,7 @@ static CONTEXTUAL_USER_FRAGMENTS: &[&dyn FragmentRegistration] = &[
     &USER_SHELL_COMMAND_REGISTRATION,
     &TURN_ABORTED_REGISTRATION,
     &SUBAGENT_NOTIFICATION_REGISTRATION,
+    &EXEC_COMMAND_COMPLETION_REGISTRATION,
     &INTERNAL_MODEL_CONTEXT_REGISTRATION,
     &RECOMMENDED_PLUGINS_REGISTRATION,
     &LEGACY_UNIFIED_EXEC_PROCESS_LIMIT_WARNING_REGISTRATION,
