@@ -61,7 +61,9 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             "on_exit".to_string(),
             JsonSchema::string_enum(
                 vec![json!("none"), json!("wake")],
-                Some("Action after a yielded command exits. `wake` registers one automatic completion turn; defaults to `none`.".to_string()),
+                Some(
+                    "Action after a yielded command exits. Use `wake` for long-running work that should resume automatically; after registration is confirmed, do not poll that session with `write_stdin`. Defaults to `none`.".to_string(),
+                ),
             ),
         ),
     ]);
