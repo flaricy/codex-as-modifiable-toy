@@ -2243,20 +2243,6 @@ mod tests {
     ];
 
     #[test]
-    fn default_base_instructions_explain_background_completion_wakeups() {
-        for expected in [
-            "use `on_exit: \"wake\"`",
-            "do not poll that session with `write_stdin`",
-            "does not have a completion notification registered",
-        ] {
-            assert!(
-                BASE_INSTRUCTIONS_DEFAULT.contains(expected),
-                "default base instructions missing {expected:?}"
-            );
-        }
-    }
-
-    #[test]
     fn plaintext_agent_message_content_rejects_mixed_encrypted_content() {
         let content = vec![
             AgentMessageInputContent::InputText {

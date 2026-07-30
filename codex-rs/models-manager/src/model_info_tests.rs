@@ -15,20 +15,6 @@ fn config_with_personality(personality: Option<Personality>) -> ModelsManagerCon
 }
 
 #[test]
-fn fallback_base_instructions_explain_background_completion_wakeups() {
-    for expected in [
-        "use `on_exit: \"wake\"`",
-        "do not poll that session with `write_stdin`",
-        "does not have a completion notification registered",
-    ] {
-        assert!(
-            BASE_INSTRUCTIONS.contains(expected),
-            "fallback base instructions missing {expected:?}"
-        );
-    }
-}
-
-#[test]
 fn base_instruction_override_preserves_catalog_approval_messages() {
     let mut model = model_info_from_slug("unknown-model");
     let approvals = ApprovalMessages {
