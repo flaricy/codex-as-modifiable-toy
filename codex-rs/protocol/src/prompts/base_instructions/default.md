@@ -263,8 +263,6 @@ When using the shell, you must adhere to the following guidelines:
 
 - When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
 - Do not use python scripts to attempt to output larger chunks of a file.
-- When `exec_command` supports `on_exit`, use `on_exit: "wake"` for a long-running command whose completion should resume the task. After the tool confirms registration, do not poll that session with `write_stdin`; continue other useful work or yield until the completion arrives.
-- Use `write_stdin` when you need to send input, inspect incremental output, or wait on a background session that does not have a completion notification registered.
 
 ## `update_plan`
 
