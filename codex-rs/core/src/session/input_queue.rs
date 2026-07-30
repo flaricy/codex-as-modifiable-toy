@@ -112,9 +112,9 @@ impl InputQueue {
         } else {
             false
         };
-        let pending_activity = if has_pending_steer {
+        let pending_activity = if has_pending_steer || self.has_exec_wakeups().await {
             Some(InputQueueActivity::Steer)
-        } else if self.has_pending_mailbox_items().await || self.has_exec_wakeups().await {
+        } else if self.has_pending_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
         } else {
             None
@@ -140,7 +140,12 @@ impl InputQueue {
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
-    pub(crate) async fn enqueue_exec_wakeup(&self, process_id: i32, item: ResponseItem) {
+    pub(crate) async fn enqueue_exec_wakeup(
+        &self,
+        process_id: i32,
+        item: ResponseItem,
+        steer_active_turn: bool,
+    ) {
         let mut wakeups = self.exec_wakeups.lock().await;
         if wakeups.len() >= MAX_PENDING_EXEC_WAKEUPS
             || wakeups
@@ -151,7 +156,11 @@ impl InputQueue {
         }
         wakeups.push_back((process_id, item));
         drop(wakeups);
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        self.activity_tx.send_replace(if steer_active_turn {
+            InputQueueActivity::Steer
+        } else {
+            InputQueueActivity::Mailbox
+        });
     }
 
     pub(crate) async fn remove_exec_wakeup(&self, process_id: i32) {
@@ -277,7 +286,7 @@ impl InputQueue {
             .await;
     }
 
-    pub(super) async fn accept_mailbox_delivery_for_turn_state(
+    pub(crate) async fn accept_mailbox_delivery_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,
     ) {
@@ -689,11 +698,19 @@ mod tests {
         let input_queue = InputQueue::new();
         let first = completion_item("first");
         let second = completion_item("second");
-        input_queue.enqueue_exec_wakeup(1000, first).await;
         input_queue
-            .enqueue_exec_wakeup(1000, completion_item("duplicate"))
+            .enqueue_exec_wakeup(1000, first, /*steer_active_turn*/ false)
             .await;
-        input_queue.enqueue_exec_wakeup(1001, second.clone()).await;
+        input_queue
+            .enqueue_exec_wakeup(
+                1000,
+                completion_item("duplicate"),
+                /*steer_active_turn*/ false,
+            )
+            .await;
+        input_queue
+            .enqueue_exec_wakeup(1001, second.clone(), /*steer_active_turn*/ false)
+            .await;
 
         input_queue.remove_exec_wakeup(1000).await;
         let active_turn = Mutex::new(None);
@@ -704,5 +721,36 @@ mod tests {
         assert_eq!(parent_turn_id, None);
         assert_eq!(root_turn_id, None);
         assert!(!input_queue.has_exec_wakeups().await);
+    }
+
+    #[tokio::test]
+    async fn exec_wakeup_notifies_active_turn_as_steer() {
+        use codex_protocol::models::ContentItem;
+
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending_activity, None);
+
+        input_queue
+            .enqueue_exec_wakeup(
+                1000,
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "complete".to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                /*steer_active_turn*/ true,
+            )
+            .await;
+
+        activity_rx.changed().await.expect("exec wakeup update");
+        assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+        let (_, pending_activity) = input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending_activity, Some(InputQueueActivity::Steer));
     }
 }
