@@ -3604,7 +3604,7 @@ async fn unified_exec_on_exit_wakes_idle_turn_once() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unified_exec_write_stdin_suppresses_on_exit_wake_while_running() -> Result<()> {
+async fn unified_exec_write_stdin_keeps_on_exit_wake_while_running() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses a POSIX sleep command");
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -3655,6 +3655,11 @@ async fn unified_exec_write_stdin_suppresses_on_exit_wake_while_running() -> Res
             ev_assistant_message("msg-1", "observed manually"),
             ev_completed("resp-3"),
         ]),
+        sse(vec![
+            ev_response_created("resp-4"),
+            ev_assistant_message("msg-2", "completion received"),
+            ev_completed("resp-4"),
+        ]),
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
@@ -3677,8 +3682,8 @@ async fn unified_exec_write_stdin_suppresses_on_exit_wake_while_running() -> Res
         .collect::<Vec<_>>();
     assert_eq!(
         bodies.len(),
-        3,
-        "manual write_stdin observation must suppress the automatic completion turn"
+        4,
+        "a write_stdin result that leaves the process running must preserve the completion wake"
     );
 
     let outputs = collect_tool_outputs(&bodies)?;
@@ -3689,6 +3694,101 @@ async fn unified_exec_write_stdin_suppresses_on_exit_wake_while_running() -> Res
         write_output.process_id.is_some(),
         "write_stdin should observe the process while it is still running"
     );
+    let completion_request = bodies[3].to_string();
+    for expected in ["<exec_command_completion>", "MANUAL-COMPLETE", "exit_code"] {
+        assert!(
+            completion_request.contains(expected),
+            "automatic turn missing {expected:?}: {completion_request}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_write_stdin_suppresses_wake_when_it_observes_exit() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX sleep command");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let write_call_id = "uexec-on-exit-write-completes";
+    let start_args = json!({
+        "cmd": "sleep 0.8; printf 'OBSERVED-COMPLETE'",
+        "yield_time_ms": 250,
+        "on_exit": "wake",
+    });
+    let write_args = json!({
+        "chars": "",
+        "session_id": 1000,
+        "yield_time_ms": 2500,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                "uexec-on-exit-observed-complete",
+                "exec_command",
+                &serde_json::to_string(&start_args)?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_function_call(
+                write_call_id,
+                "write_stdin",
+                &serde_json::to_string(&write_args)?,
+            ),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-3"),
+            ev_assistant_message("msg-1", "completion observed by write_stdin"),
+            ev_completed("resp-3"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "poll until the background command exits",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let bodies = request_log
+        .requests()
+        .into_iter()
+        .map(|request| request.body_json())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "write_stdin observing final completion must suppress a duplicate wake"
+    );
+
+    let outputs = collect_tool_outputs(&bodies)?;
+    let write_output = outputs
+        .get(write_call_id)
+        .expect("missing write_stdin output");
+    assert!(
+        write_output.process_id.is_none(),
+        "write_stdin should report that the process exited"
+    );
+    assert_regex_match(".*OBSERVED-COMPLETE.*", &write_output.output);
     Ok(())
 }
 

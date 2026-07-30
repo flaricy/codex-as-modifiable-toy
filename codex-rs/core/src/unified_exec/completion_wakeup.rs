@@ -10,6 +10,7 @@ use super::process::OutputBuffer;
 use crate::context::ContextualUserFragment;
 use crate::context::ExecCommandCompletion;
 use crate::session::session::Session;
+use crate::state::TaskKind;
 
 const COMPLETION_COMMAND_MAX_TOKENS: usize = 500;
 const COMPLETION_OUTPUT_MAX_TOKENS: usize = 2_000;
@@ -125,9 +126,28 @@ impl CompletionWakeRegistration {
             duration,
             output,
         );
+        let active_turn_state = {
+            let active_turn = session.active_turn.lock().await;
+            active_turn.as_ref().and_then(|turn| {
+                turn.task
+                    .as_ref()
+                    .is_some_and(|task| task.kind == TaskKind::Regular)
+                    .then(|| Arc::clone(&turn.turn_state))
+            })
+        };
+        if let Some(turn_state) = active_turn_state.as_deref() {
+            session
+                .input_queue
+                .accept_mailbox_delivery_for_turn_state(turn_state)
+                .await;
+        }
         session
             .input_queue
-            .enqueue_exec_wakeup(self.0.process_id, ContextualUserFragment::into(fragment))
+            .enqueue_exec_wakeup(
+                self.0.process_id,
+                ContextualUserFragment::into(fragment),
+                active_turn_state.is_some(),
+            )
             .await;
         if self.0.state.lock().await.observed {
             session

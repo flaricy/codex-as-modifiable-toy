@@ -743,9 +743,6 @@ impl UnifiedExecProcessManager {
         } = self
             .prepare_process_handles(process_id, &locked_process)
             .await?;
-        if let Some(completion_wakeup) = completion_wakeup.as_ref() {
-            completion_wakeup.observed().await;
-        }
         let mut status_after_write = None;
 
         if !request.input.is_empty() {
@@ -866,6 +863,15 @@ impl UnifiedExecProcessManager {
                 }
             }
         };
+
+        // A running write_stdin interaction is not itself an observation of
+        // final completion. Keep the one-shot wake armed when the process is
+        // still alive; suppress it only when this tool result reports the exit.
+        if process_id.is_none()
+            && let Some(completion_wakeup) = completion_wakeup.as_ref()
+        {
+            completion_wakeup.observed().await;
+        }
 
         let response = ExecCommandToolOutput {
             event_call_id,
