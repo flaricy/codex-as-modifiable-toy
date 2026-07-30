@@ -71,6 +71,15 @@ fn exec_command_tool_matches_expected_spec() {
                 )),
         ),
         (
+            "on_exit".to_string(),
+            JsonSchema::string_enum(
+                vec![serde_json::json!("none"), serde_json::json!("wake")],
+                Some(
+                    "Action after a yielded command exits. Use `wake` for long-running work that should resume automatically; after registration is confirmed, do not poll that session with `write_stdin`. Defaults to `none`.".to_string(),
+                ),
+            ),
+        ),
+        (
             "login".to_string(),
             JsonSchema::boolean(Some(
                     "True runs the shell with -l/-i semantics; false disables them. Defaults to true.".to_string(),
