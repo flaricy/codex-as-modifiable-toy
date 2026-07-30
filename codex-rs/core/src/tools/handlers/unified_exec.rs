@@ -38,6 +38,8 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
+    on_exit: ExecCommandOnExit,
+    #[serde(default)]
     sandbox_permissions: Option<SandboxPermissions>,
     #[serde(default)]
     additional_permissions: Option<AdditionalPermissionProfile>,

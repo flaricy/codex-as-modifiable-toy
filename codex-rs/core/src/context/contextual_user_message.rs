@@ -4,6 +4,7 @@ use codex_protocol::models::ContentItem;
 
 use super::AdditionalContextUserFragment;
 use super::ContextualUserFragment;
+use super::ExecCommandCompletion;
 use super::InternalModelContextFragment;
 use super::LegacyApplyPatchExecCommandWarning;
 use super::LegacyModelMismatchWarning;
@@ -18,6 +19,7 @@ use super::world_state::EnvironmentsState;
 const CONTEXTUAL_USER_FRAGMENT_MATCHERS: &[fn(&str) -> bool] = &[
     UserInstructions::matches_text,
     EnvironmentsState::matches_text,
+    ExecCommandCompletion::matches_text,
     AdditionalContextUserFragment::matches_text,
     codex_skills_extension::is_skill_prompt_fragment,
     UserShellCommand::matches_text,

@@ -139,6 +139,7 @@ async fn exec_command_with_tty(
             process_id,
             cwd: cwd.clone().into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            completion_wakeup: None,
             hook_command: cmd.to_string(),
             tty,
             network_approval: None,
@@ -200,6 +201,7 @@ async fn exec_command_with_tty(
         original_token_count: Some(original_token_count),
         output_omitted_bytes,
         hook_command: Some(cmd.to_string()),
+        completion_notification: None,
     })
 }
 
@@ -613,6 +615,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            completion_wakeup: None,
             hook_command: "sleep 60".to_string(),
             tty: true,
             network_approval: None,
@@ -687,6 +690,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            completion_wakeup: None,
             hook_command: "sleep 60".to_string(),
             tty: true,
             network_approval: None,

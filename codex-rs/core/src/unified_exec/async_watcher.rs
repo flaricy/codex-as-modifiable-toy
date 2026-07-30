@@ -8,6 +8,7 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
 
+use super::CompletionWakeRegistration;
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
 use super::process::OutputHandles;
@@ -172,6 +173,7 @@ pub(crate) fn spawn_exit_watcher(
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+    completion_wakeup: Option<CompletionWakeRegistration>,
 ) {
     let exit_token = process.cancellation_token();
     let output_drained = process.output_drained_notify();
@@ -232,6 +234,9 @@ pub(crate) fn spawn_exit_watcher(
                 duration,
             )
             .await;
+            if let Some(completion_wakeup) = completion_wakeup {
+                completion_wakeup.complete(exit_code, duration).await;
+            }
         }
     });
 }

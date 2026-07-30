@@ -34,6 +34,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
 use rand::rng;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 
 use crate::sandboxing::SandboxPermissions;
@@ -46,6 +47,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
 mod async_watcher;
+mod completion_wakeup;
 mod errors;
 mod head_tail_buffer;
 mod process;
@@ -56,6 +58,7 @@ pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
     process_manager::set_deterministic_process_ids_for_tests(enabled);
 }
 
+pub(crate) use completion_wakeup::CompletionWakeRegistration;
 pub(crate) use errors::UnifiedExecError;
 pub(crate) use process::NoopSpawnLifecycle;
 #[cfg(unix)]
@@ -73,6 +76,14 @@ pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExecCommandOnExit {
+    #[default]
+    None,
+    Wake,
+}
 
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
@@ -98,6 +109,7 @@ pub(crate) struct ExecCommandRequest {
     pub process_id: i32,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
+    pub on_exit: ExecCommandOnExit,
     pub cwd: PathUri,
     pub sandbox_cwd: PathUri,
     pub turn_environment: TurnEnvironment,
@@ -173,6 +185,7 @@ struct ProcessEntry {
     process_id: i32,
     cwd: PathUri,
     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
+    completion_wakeup: Option<CompletionWakeRegistration>,
     hook_command: String,
     tty: bool,
     network_approval: Option<DeferredNetworkApproval>,

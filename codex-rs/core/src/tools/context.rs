@@ -325,6 +325,13 @@ pub struct ExecCommandToolOutput {
     /// Bytes omitted by the output collection cap before model-facing truncation.
     pub output_omitted_bytes: Option<NonZeroUsize>,
     pub hook_command: Option<String>,
+    pub completion_notification: Option<ExecCommandCompletionNotification>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecCommandCompletionNotification {
+    Registered,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
@@ -384,6 +391,8 @@ impl ToolOutput for ExecCommandToolOutput {
             #[serde(skip_serializing_if = "Option::is_none")]
             original_token_count: Option<usize>,
             output: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            completion_notification: Option<ExecCommandCompletionNotification>,
         }
 
         let result = UnifiedExecCodeModeResult {
@@ -396,6 +405,7 @@ impl ToolOutput for ExecCommandToolOutput {
                 Some(max_tokens) => self.truncated_output(max_tokens),
                 None => String::from_utf8_lossy(&self.raw_output).to_string(),
             },
+            completion_notification: self.completion_notification,
         };
 
         serde_json::to_value(result).unwrap_or_else(|err| {
@@ -459,6 +469,11 @@ impl ExecCommandToolOutput {
 
         if let Some(original_token_count) = self.original_token_count {
             sections.push(format!("Original token count: {original_token_count}"));
+        }
+
+        if let Some(ExecCommandCompletionNotification::Registered) = self.completion_notification {
+            sections
+                .push("Completion notification registered; do not poll this session.".to_string());
         }
 
         sections.push("Output:".to_string());

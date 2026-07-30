@@ -16,6 +16,8 @@ use tokio::sync::watch;
 
 static PENDING_MAILBOX_MESSAGES: Gauge = Gauge::new("core.mailbox.pending");
 
+const MAX_PENDING_EXEC_WAKEUPS: usize = 64;
+
 /// Input consumed by a regular turn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TurnInput {
@@ -77,6 +79,7 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    exec_wakeups: Mutex<VecDeque<(i32, ResponseItem)>>,
 }
 
 struct PendingMailboxCommunication {
@@ -92,6 +95,7 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            exec_wakeups: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -110,7 +114,7 @@ impl InputQueue {
         };
         let pending_activity = if has_pending_steer {
             Some(InputQueueActivity::Steer)
-        } else if self.has_pending_mailbox_items().await {
+        } else if self.has_pending_mailbox_items().await || self.has_exec_wakeups().await {
             Some(InputQueueActivity::Mailbox)
         } else {
             None
@@ -134,6 +138,40 @@ impl InputQueue {
                 _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    pub(crate) async fn enqueue_exec_wakeup(&self, process_id: i32, item: ResponseItem) {
+        let mut wakeups = self.exec_wakeups.lock().await;
+        if wakeups.len() >= MAX_PENDING_EXEC_WAKEUPS
+            || wakeups
+                .iter()
+                .any(|(queued_process_id, _)| *queued_process_id == process_id)
+        {
+            return;
+        }
+        wakeups.push_back((process_id, item));
+        drop(wakeups);
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    pub(crate) async fn remove_exec_wakeup(&self, process_id: i32) {
+        self.exec_wakeups
+            .lock()
+            .await
+            .retain(|(queued_process_id, _)| *queued_process_id != process_id);
+    }
+
+    async fn drain_exec_wakeups(&self) -> Vec<TurnInput> {
+        self.exec_wakeups
+            .lock()
+            .await
+            .drain(..)
+            .map(|(_, item)| TurnInput::ResponseItem(item.into()))
+            .collect()
+    }
+
+    pub(crate) async fn has_exec_wakeups(&self) -> bool {
+        !self.exec_wakeups.lock().await.is_empty()
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -326,13 +364,15 @@ impl InputQueue {
         {
             active_turn_metadata.mark_root_turn_ambiguous();
         }
-        if pending_input.is_empty() {
-            (mailbox_items, parent_turn_id, root_turn_id)
+        let mut items = if pending_input.is_empty() {
+            mailbox_items
         } else {
             let mut pending_input = pending_input;
             pending_input.extend(mailbox_items);
-            (pending_input, parent_turn_id, root_turn_id)
-        }
+            pending_input
+        };
+        items.extend(self.drain_exec_wakeups().await);
+        (items, parent_turn_id, root_turn_id)
     }
 
     #[expect(
@@ -359,7 +399,10 @@ impl InputQueue {
         if has_turn_pending_input {
             return true;
         }
-        self.has_pending_mailbox_items().await
+        if self.has_pending_mailbox_items().await {
+            return true;
+        }
+        self.has_exec_wakeups().await
     }
 }
 
@@ -625,5 +668,41 @@ mod tests {
             )
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn input_queue_deduplicates_and_removes_exec_wakeups() {
+        use codex_protocol::models::ContentItem;
+
+        fn completion_item(text: &str) -> ResponseItem {
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: text.to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }
+        }
+
+        let input_queue = InputQueue::new();
+        let first = completion_item("first");
+        let second = completion_item("second");
+        input_queue.enqueue_exec_wakeup(1000, first).await;
+        input_queue
+            .enqueue_exec_wakeup(1000, completion_item("duplicate"))
+            .await;
+        input_queue.enqueue_exec_wakeup(1001, second.clone()).await;
+
+        input_queue.remove_exec_wakeup(1000).await;
+        let active_turn = Mutex::new(None);
+        let (items, parent_turn_id, root_turn_id) =
+            input_queue.get_pending_input(&active_turn).await;
+
+        assert_eq!(items, vec![TurnInput::ResponseItem(second.into())]);
+        assert_eq!(parent_turn_id, None);
+        assert_eq!(root_turn_id, None);
+        assert!(!input_queue.has_exec_wakeups().await);
     }
 }
