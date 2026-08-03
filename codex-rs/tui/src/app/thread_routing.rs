@@ -800,6 +800,18 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::ListBackgroundTerminals => {
+                match app_server.thread_background_terminals_list(thread_id).await {
+                    Ok(terminals) => self.chat_widget.add_ps_output(terminals),
+                    Err(err) => {
+                        tracing::warn!("failed to list background terminals: {err:#}");
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to list background terminals: {err:#}"
+                        ));
+                    }
+                }
+                Ok(true)
+            }
             AppCommand::RunUserShellCommand { command } => {
                 app_server
                     .thread_shell_command(thread_id, command.to_string())

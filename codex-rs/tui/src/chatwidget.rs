@@ -1395,18 +1395,6 @@ impl ChatWidget {
         ));
     }
 
-    pub(crate) fn add_ps_output(&mut self) {
-        let processes = self
-            .unified_exec_processes
-            .iter()
-            .map(|process| history_cell::UnifiedExecProcessDetails {
-                command_display: process.command_display.clone(),
-                recent_chunks: process.recent_chunks.clone(),
-            })
-            .collect();
-        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
-    }
-
     fn clean_background_terminals(&mut self) {
         self.submit_op(AppCommand::clean_background_terminals());
         self.unified_exec_processes.clear();
