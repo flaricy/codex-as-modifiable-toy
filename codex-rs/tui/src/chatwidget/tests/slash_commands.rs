@@ -2101,6 +2101,15 @@ async fn slash_stop_submits_background_terminal_cleanup() {
 }
 
 #[tokio::test]
+async fn slash_ps_requests_authoritative_background_terminal_list() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Ps);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::ListBackgroundTerminals));
+}
+
+#[tokio::test]
 async fn slash_clear_requests_ui_clear_when_idle() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
