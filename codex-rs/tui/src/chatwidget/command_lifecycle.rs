@@ -4,8 +4,29 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use codex_app_server_protocol::ThreadBackgroundTerminal;
 
 impl ChatWidget {
+    pub(crate) fn add_ps_output(&mut self, terminals: Vec<ThreadBackgroundTerminal>) {
+        let processes = terminals
+            .into_iter()
+            .map(|terminal| {
+                let recent_chunks = self
+                    .unified_exec_processes
+                    .iter()
+                    .find(|process| process.key == terminal.process_id)
+                    .map(|process| process.recent_chunks.clone())
+                    .unwrap_or_default();
+                let command = split_command_string(&terminal.command);
+                history_cell::UnifiedExecProcessDetails {
+                    command_display: strip_bash_lc_and_escape(&command),
+                    recent_chunks,
+                }
+            })
+            .collect();
+        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+    }
+
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
