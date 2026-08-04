@@ -146,6 +146,35 @@ impl ContextManager {
         Arc::unwrap_or_clone(self.items)
     }
 
+    /// Removes response-state artifacts that are not portable across model providers.
+    ///
+    /// Provider-issued item IDs and encrypted reasoning can only be interpreted by the
+    /// provider that created them. Tool call IDs are intentionally retained so calls stay paired
+    /// with their outputs while the target provider summarizes the portable history.
+    pub(crate) fn make_provider_portable(&mut self) {
+        let items = Arc::make_mut(&mut self.items);
+        items.retain(|item| {
+            !matches!(
+                item,
+                ResponseItem::Reasoning { .. }
+                    | ResponseItem::Compaction { .. }
+                    | ResponseItem::ContextCompaction { .. }
+            )
+        });
+        for item in items {
+            item.set_id(/*new_id*/ None);
+            item.clear_internal_chat_message_metadata_passthrough();
+            if let ResponseItem::FunctionCall {
+                encrypted_function_args,
+                ..
+            } = item
+            {
+                *encrypted_function_args = None;
+            }
+        }
+        self.history_version = self.history_version.wrapping_add(1);
+    }
+
     /// Returns raw items in the history.
     pub(crate) fn raw_items(&self) -> &[ResponseItem] {
         &self.items

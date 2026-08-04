@@ -206,6 +206,9 @@ pub(crate) enum ThreadParamsMode {
 pub(crate) enum ResumeModelSettings {
     /// Sends the current config's model, provider, and reasoning effort as explicit overrides.
     OverrideFromCurrentConfig,
+    /// Restores saved model settings unless the saved provider differs from the current local
+    /// provider, in which case model and provider are overridden together.
+    OverrideIfProviderDiffers,
     /// Omits those overrides so app-server restores the settings saved with the thread.
     RestoreFromThread,
 }
@@ -538,6 +541,20 @@ impl AppServerSession {
         thread_id: ThreadId,
         model_settings: ResumeModelSettings,
     ) -> Result<AppServerStartedThread> {
+        let model_settings = if model_settings == ResumeModelSettings::OverrideIfProviderDiffers {
+            if self.thread_params_mode() == ThreadParamsMode::Embedded {
+                let stored_thread = self.thread_read(thread_id, /*include_turns*/ false).await?;
+                if stored_thread.model_provider != config.model_provider_id {
+                    ResumeModelSettings::OverrideFromCurrentConfig
+                } else {
+                    ResumeModelSettings::RestoreFromThread
+                }
+            } else {
+                ResumeModelSettings::RestoreFromThread
+            }
+        } else {
+            model_settings
+        };
         let request_id = self.next_request_id();
         let session_config = if model_settings == ResumeModelSettings::RestoreFromThread {
             config.clone()
@@ -1568,6 +1585,9 @@ fn thread_resume_params_from_config(
             config.model.clone(),
             thread_params_mode.model_provider_from_config(&config),
         ),
+        ResumeModelSettings::OverrideIfProviderDiffers => {
+            unreachable!("provider mismatch mode must be resolved before building resume params")
+        }
         ResumeModelSettings::RestoreFromThread => (None, None),
     };
     ThreadResumeParams {
@@ -2417,6 +2437,43 @@ mod tests {
                 ),
             ]))
         );
+    }
+
+    #[tokio::test]
+    async fn thread_resume_overrides_model_and_provider_when_saved_provider_differs() -> Result<()>
+    {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&codex_home).await;
+        config.model = Some("gpt-5.4".to_string());
+        let expected_model = config.model.clone().expect("configured model");
+        let expected_provider = config.model_provider_id.clone();
+        let thread_id = ThreadId::from_string(
+            &create_fake_rollout(
+                codex_home.path(),
+                "2025-01-05T12-00-00",
+                "2025-01-05T12:00:00Z",
+                "Saved user message",
+                Some("previous-provider"),
+                /*git_info*/ None,
+            )
+            .expect("create source rollout"),
+        )?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+        let resumed = app_server
+            .resume_thread(
+                config,
+                thread_id,
+                ResumeModelSettings::OverrideIfProviderDiffers,
+            )
+            .await?;
+
+        assert_eq!(
+            (resumed.session.model, resumed.session.model_provider_id),
+            (expected_model, expected_provider)
+        );
+        app_server.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]

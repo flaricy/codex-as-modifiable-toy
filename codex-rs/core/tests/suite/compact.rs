@@ -2299,6 +2299,161 @@ async fn pre_sampling_compact_runs_when_comp_hash_changes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_sampling_compact_uses_target_model_and_provider_after_cross_provider_resume() {
+    skip_if_no_network!();
+
+    let previous_server = MockServer::start().await;
+    let target_server = MockServer::start().await;
+    let previous_model = "gpt-5.4";
+    let target_model = "deepseek-v4-flash";
+
+    let previous_request = mount_sse_once(
+        &previous_server,
+        sse(vec![
+            ev_assistant_message("m1", "before provider migration"),
+            ev_completed_with_tokens("r1", /*total_tokens*/ 100),
+        ]),
+    )
+    .await;
+    let target_requests = mount_sse_sequence(
+        &target_server,
+        vec![
+            sse(vec![
+                ev_assistant_message("m2", "PROVIDER_MIGRATION_SUMMARY"),
+                ev_completed_with_tokens("r2", /*total_tokens*/ 10),
+            ]),
+            sse(vec![
+                ev_assistant_message("m3", "after provider migration"),
+                ev_completed_with_tokens("r3", /*total_tokens*/ 100),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut previous_provider = non_openai_model_provider(&previous_server);
+    previous_provider.name = "Previous provider".to_string();
+    let mut previous_model_info =
+        model_info_with_optional_comp_hash(previous_model, Some("hash-a"));
+    previous_model_info
+        .model_messages
+        .as_mut()
+        .expect("previous model messages")
+        .instructions_template = Some("PREVIOUS_PROVIDER_INSTRUCTIONS".to_string());
+    let previous_catalog = ModelsResponse {
+        models: vec![previous_model_info],
+    };
+    let mut initial_builder = test_codex()
+        .with_auth(CodexAuth::from_api_key("previous-key"))
+        .with_model(previous_model)
+        .with_config(move |config| {
+            config.model_provider_id = "previous-provider".to_string();
+            config.model_provider = previous_provider;
+            config.model_catalog = Some(previous_catalog);
+            set_test_compact_prompt(config);
+        });
+    let initial = initial_builder
+        .build(&previous_server)
+        .await
+        .expect("build initial test codex");
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+
+    initial
+        .codex
+        .submit(disabled_permission_user_turn(
+            "before provider migration",
+            initial.cwd.path().to_path_buf(),
+            previous_model.to_string(),
+        ))
+        .await
+        .expect("submit pre-migration turn");
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    initial.codex.submit(Op::Shutdown).await.expect("shutdown");
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::ShutdownComplete)
+    })
+    .await;
+
+    let mut target_provider = non_openai_model_provider(&target_server);
+    target_provider.name = "Target provider".to_string();
+    let mut target_model_info = model_info_with_optional_comp_hash("gpt-5.4", Some("hash-b"));
+    target_model_info.slug = target_model.to_string();
+    target_model_info
+        .model_messages
+        .as_mut()
+        .expect("target model messages")
+        .instructions_template = Some("TARGET_PROVIDER_INSTRUCTIONS".to_string());
+    let target_catalog = ModelsResponse {
+        models: vec![target_model_info],
+    };
+    let mut resumed_builder = test_codex()
+        .with_auth(CodexAuth::from_api_key("target-key"))
+        .with_model(target_model)
+        .with_config(move |config| {
+            config.model_provider_id = "target-provider".to_string();
+            config.model_provider = target_provider;
+            config.model_catalog = Some(target_catalog);
+            set_test_compact_prompt(config);
+        });
+    let resumed = resumed_builder
+        .resume(&target_server, home, rollout_path)
+        .await
+        .expect("resume with target provider");
+
+    resumed
+        .codex
+        .submit(disabled_permission_user_turn(
+            "after provider migration",
+            resumed.cwd.path().to_path_buf(),
+            target_model.to_string(),
+        ))
+        .await
+        .expect("submit migrated turn");
+    assert_compaction_uses_turn_lifecycle_id(&resumed.codex).await;
+
+    assert_eq!(previous_request.requests().len(), 1);
+    let requests = target_requests.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected target compact and follow-up requests"
+    );
+    assert_eq!(
+        requests[0].body_json()["model"].as_str(),
+        Some(target_model)
+    );
+    assert_eq!(
+        requests[1].body_json()["model"].as_str(),
+        Some(target_model)
+    );
+    assert_eq!(
+        requests[0].body_json()["instructions"].as_str(),
+        Some("TARGET_PROVIDER_INSTRUCTIONS")
+    );
+    assert_eq!(
+        requests[1].body_json()["instructions"].as_str(),
+        Some("TARGET_PROVIDER_INSTRUCTIONS")
+    );
+    assert!(
+        !requests[0]
+            .body_json()
+            .to_string()
+            .contains("PREVIOUS_PROVIDER_INSTRUCTIONS")
+    );
+    assert!(body_contains_text(
+        &requests[0].body_json().to_string(),
+        SUMMARIZATION_PROMPT
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_sampling_compact_falls_back_from_retired_previous_model_after_rename() {
     skip_if_no_network!();
 

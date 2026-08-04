@@ -3304,6 +3304,9 @@ pub struct TurnContextItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_system_sandbox_policy: Option<FileSystemSandboxPolicy>,
     pub model: String,
+    /// Provider that served this turn. Missing in rollouts written before provider-aware resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comp_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6127,6 +6130,7 @@ mod tests {
                 },
             ])),
             model: "gpt-5".to_string(),
+            model_provider: None,
             comp_hash: None,
             personality: None,
             collaboration_mode: None,

@@ -73,6 +73,20 @@ pub(crate) enum InitialContextInjection {
     DoNotInject,
 }
 
+/// Selects whether compaction can reuse provider-owned response state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CompactionProviderMode {
+    SameProvider,
+    CrossProvider,
+}
+
+pub(crate) struct CompactionOptions {
+    pub(crate) initial_context_injection: InitialContextInjection,
+    pub(crate) reason: CompactionReason,
+    pub(crate) phase: CompactionPhase,
+    pub(crate) provider_mode: CompactionProviderMode,
+}
+
 /// Metadata for a new compaction checkpoint, kept separate from its replacement history.
 ///
 /// `Session::replace_compacted_history` assigns missing item IDs before constructing the persisted
@@ -112,9 +126,7 @@ pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bo
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    options: CompactionOptions,
 ) -> CodexResult<()> {
     let prompt = turn_context
         .config
@@ -128,16 +140,7 @@ pub(crate) async fn run_inline_auto_compact_task(
         text_elements: Vec::new(),
     }];
 
-    run_compact_task_inner(
-        sess,
-        turn_context,
-        input,
-        initial_context_injection,
-        CompactionTrigger::Auto,
-        reason,
-        phase,
-    )
-    .await?;
+    run_compact_task_inner(sess, turn_context, input, CompactionTrigger::Auto, options).await?;
     Ok(())
 }
 
@@ -158,10 +161,13 @@ pub(crate) async fn run_compact_task(
         sess.clone(),
         turn_context,
         input,
-        InitialContextInjection::DoNotInject,
         CompactionTrigger::Manual,
-        CompactionReason::UserRequested,
-        CompactionPhase::StandaloneTurn,
+        CompactionOptions {
+            initial_context_injection: InitialContextInjection::DoNotInject,
+            reason: CompactionReason::UserRequested,
+            phase: CompactionPhase::StandaloneTurn,
+            provider_mode: CompactionProviderMode::SameProvider,
+        },
     )
     .await?;
     Ok(())
@@ -171,11 +177,15 @@ async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
-    initial_context_injection: InitialContextInjection,
     trigger: CompactionTrigger,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    options: CompactionOptions,
 ) -> CodexResult<()> {
+    let CompactionOptions {
+        initial_context_injection,
+        reason,
+        phase,
+        provider_mode,
+    } = options;
     let compaction_metadata =
         CompactionTurnMetadata::new(trigger, reason, CompactionImplementation::Responses, phase);
     let attempt = CompactionAnalyticsAttempt::begin(
@@ -209,6 +219,7 @@ async fn run_compact_task_inner(
         input,
         initial_context_injection,
         compaction_metadata,
+        provider_mode,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -244,6 +255,7 @@ async fn run_compact_task_inner_impl(
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    provider_mode: CompactionProviderMode,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
@@ -251,6 +263,9 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    if provider_mode == CompactionProviderMode::CrossProvider {
+        history.make_provider_portable();
+    }
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info.truncation_policy.into(),
@@ -318,6 +333,12 @@ async fn run_compact_task_inner_impl(
                     continue;
                 }
                 sess.set_total_tokens_full(turn_context.as_ref()).await;
+                sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+                sess.send_event(&turn_context, event).await;
+                return Err(e);
+            }
+            Err(e) if !e.is_retryable() => {
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                 sess.send_event(&turn_context, event).await;

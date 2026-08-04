@@ -231,6 +231,7 @@ impl Session {
                     ) {
                         active_segment.previous_turn_settings = Some(PreviousTurnSettings {
                             model: ctx.model.clone(),
+                            model_provider: ctx.model_provider.clone(),
                             comp_hash: ctx.comp_hash.clone(),
                             realtime_active: ctx.realtime_active,
                         });
@@ -304,6 +305,21 @@ impl Session {
                 &mut window,
                 &mut pending_rollback_turns,
             );
+        }
+
+        // Rollouts written before provider-aware turn contexts still carry the provider in their
+        // session metadata. Hydrate it here so a cross-provider resume takes the migration path
+        // instead of resolving the old model name against the newly selected provider.
+        if let Some(previous_turn_settings) = previous_turn_settings.as_mut()
+            && previous_turn_settings.model_provider.is_none()
+        {
+            previous_turn_settings.model_provider =
+                rollout_items.iter().find_map(|item| match item {
+                    RolloutItem::SessionMeta(session_meta) => {
+                        session_meta.meta.model_provider.clone()
+                    }
+                    _ => None,
+                });
         }
 
         let fallback_window_number = u64::try_from(

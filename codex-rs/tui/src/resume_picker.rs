@@ -163,7 +163,7 @@ enum PickerLoadRequest {
     Transcript { thread_id: ThreadId },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ProviderFilter {
     Any,
     MatchDefault(String),
@@ -196,6 +196,7 @@ impl SessionFilterMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolbarControl {
     Filter,
+    Provider,
     Sort,
 }
 
@@ -203,13 +204,15 @@ impl ToolbarControl {
     fn previous(self) -> Self {
         match self {
             Self::Filter => Self::Sort,
-            Self::Sort => Self::Filter,
+            Self::Provider => Self::Filter,
+            Self::Sort => Self::Provider,
         }
     }
 
     fn next(self) -> Self {
         match self {
-            Self::Filter => Self::Sort,
+            Self::Filter => Self::Provider,
+            Self::Provider => Self::Sort,
             Self::Sort => Self::Filter,
         }
     }
@@ -692,6 +695,7 @@ struct PickerState {
     view_rows: Option<usize>,
     view_width: Option<u16>,
     provider_filter: ProviderFilter,
+    default_provider: Option<String>,
     filter_mode: SessionFilterMode,
     filter_cwd: Option<PathBuf>,
     local_filter_cwd: Option<PathBuf>,
@@ -945,6 +949,10 @@ impl PickerState {
         filter_cwd: Option<PathBuf>,
         action: SessionPickerAction,
     ) -> Self {
+        let default_provider = match &provider_filter {
+            ProviderFilter::Any => None,
+            ProviderFilter::MatchDefault(default_provider) => Some(default_provider.clone()),
+        };
         Self {
             requester,
             relative_time_reference: None,
@@ -964,6 +972,7 @@ impl PickerState {
             view_rows: None,
             view_width: None,
             provider_filter,
+            default_provider,
             filter_mode: SessionFilterMode::from_show_all(show_all, filter_cwd.as_deref()),
             local_filter_cwd: filter_cwd.clone(),
             filter_cwd,
@@ -1701,6 +1710,17 @@ impl PickerState {
         self.start_initial_load();
     }
 
+    fn toggle_provider_filter(&mut self) {
+        let Some(default_provider) = self.default_provider.clone() else {
+            return;
+        };
+        self.provider_filter = match &self.provider_filter {
+            ProviderFilter::Any => ProviderFilter::MatchDefault(default_provider),
+            ProviderFilter::MatchDefault(_) => ProviderFilter::Any,
+        };
+        self.start_initial_load();
+    }
+
     fn active_cwd_filter(&self) -> Option<PathBuf> {
         match self.filter_mode {
             SessionFilterMode::Cwd => self.filter_cwd.clone(),
@@ -1719,6 +1739,7 @@ impl PickerState {
     fn change_focused_toolbar_value(&mut self) {
         match self.toolbar_focus {
             ToolbarControl::Sort => self.toggle_sort_key(),
+            ToolbarControl::Provider => self.toggle_provider_filter(),
             ToolbarControl::Filter => self.toggle_filter_mode(),
         }
     }
@@ -2011,6 +2032,8 @@ fn toolbar_line(state: &PickerState, compact: bool) -> Line<'static> {
     let mut spans = Vec::new();
     spans.extend(filter_control_spans(state, compact));
     spans.push("   ".dim());
+    spans.extend(provider_control_spans(state, compact));
+    spans.push("   ".dim());
     spans.extend(sort_control_spans(state, compact));
     spans.into()
 }
@@ -2069,6 +2092,33 @@ fn filter_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>
     ]
 }
 
+fn provider_control_spans(state: &PickerState, compact: bool) -> Vec<Span<'static>> {
+    let provider_focused = state.toolbar_focus == ToolbarControl::Provider;
+    if compact || state.default_provider.is_none() {
+        return vec![
+            "Provider:".dim(),
+            toolbar_value(
+                provider_filter_label(&state.provider_filter),
+                /*active*/ true,
+                provider_focused,
+            ),
+        ];
+    }
+    vec![
+        "Provider: ".dim(),
+        toolbar_value(
+            "Current",
+            matches!(&state.provider_filter, ProviderFilter::MatchDefault(_)),
+            provider_focused,
+        ),
+        toolbar_value(
+            "All",
+            matches!(&state.provider_filter, ProviderFilter::Any),
+            provider_focused,
+        ),
+    ]
+}
+
 fn toolbar_value(label: &'static str, active: bool, focused: bool) -> Span<'static> {
     if active {
         let value = format!("[{label}]");
@@ -2086,6 +2136,13 @@ fn filter_mode_label(filter_mode: SessionFilterMode) -> &'static str {
     match filter_mode {
         SessionFilterMode::Cwd => "Cwd",
         SessionFilterMode::All => "All",
+    }
+}
+
+fn provider_filter_label(provider_filter: &ProviderFilter) -> &'static str {
+    match provider_filter {
+        ProviderFilter::Any => "All",
+        ProviderFilter::MatchDefault(_) => "Current",
     }
 }
 
@@ -5637,6 +5694,10 @@ session_picker_view = "dense"
             .await
             .unwrap();
         state
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        state
             .handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL))
             .await
             .unwrap();
@@ -5678,6 +5739,59 @@ session_picker_view = "dense"
         let guard = recorded_requests.lock().unwrap();
         assert_eq!(guard.len(), 2);
         assert_eq!(guard[1].cwd_filter, None);
+    }
+
+    #[tokio::test]
+    async fn provider_filter_can_switch_between_current_and_all() {
+        let recorded_requests: Arc<Mutex<Vec<PageLoadRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let request_sink = recorded_requests.clone();
+        let loader = page_only_loader(move |req: PageLoadRequest| {
+            request_sink.lock().unwrap().push(req);
+        });
+
+        let mut state = PickerState::new(
+            FrameRequester::test_dummy(),
+            loader,
+            ProviderFilter::MatchDefault(String::from("openai")),
+            /*show_all*/ false,
+            Some(PathBuf::from("/tmp/project")),
+            SessionPickerAction::Resume,
+        );
+
+        state.start_initial_load();
+        {
+            let guard = recorded_requests.lock().unwrap();
+            assert_eq!(guard.len(), 1);
+            assert_eq!(
+                guard[0].provider_filter,
+                ProviderFilter::MatchDefault(String::from("openai"))
+            );
+        }
+
+        state
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        state
+            .handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        {
+            let guard = recorded_requests.lock().unwrap();
+            assert_eq!(guard.len(), 2);
+            assert_eq!(guard[1].provider_filter, ProviderFilter::Any);
+        }
+
+        state
+            .handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        let guard = recorded_requests.lock().unwrap();
+        assert_eq!(guard.len(), 3);
+        assert_eq!(
+            guard[2].provider_filter,
+            ProviderFilter::MatchDefault(String::from("openai"))
+        );
     }
 
     #[tokio::test]

@@ -9,6 +9,8 @@ use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::collect_explicit_skill_mentions;
+use crate::compact::CompactionOptions;
+use crate::compact::CompactionProviderMode;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
 use crate::compact::should_use_remote_compact_task;
@@ -238,6 +240,7 @@ pub(crate) async fn run_turn(
         .await;
     sess.set_previous_turn_settings(Some(PreviousTurnSettings {
         model: turn_context.model_info.slug.clone(),
+        model_provider: Some(turn_context.config.model_provider_id.clone()),
         comp_hash: turn_context.model_info.comp_hash.clone(),
         realtime_active: Some(turn_context.realtime_active),
     }))
@@ -433,12 +436,16 @@ pub(crate) async fn run_turn(
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
                         &mut client_session,
-                        InitialContextInjection::BeforeLastUserMessage {
-                            world_state: Arc::clone(&world_state),
-                            step_context: Arc::clone(&step_context),
+                        CompactionOptions {
+                            initial_context_injection:
+                                InitialContextInjection::BeforeLastUserMessage {
+                                    world_state: Arc::clone(&world_state),
+                                    step_context: Arc::clone(&step_context),
+                                },
+                            reason: CompactionReason::ContextLimit,
+                            phase: CompactionPhase::MidTurn,
+                            provider_mode: CompactionProviderMode::SameProvider,
                         },
-                        CompactionReason::ContextLimit,
-                        CompactionPhase::MidTurn,
                     )
                     .await
                     {
@@ -1002,9 +1009,12 @@ async fn run_pre_sampling_compact(
             step_context,
             /*fallback_step_context*/ None,
             client_session,
-            InitialContextInjection::DoNotInject,
-            CompactionReason::ContextLimit,
-            CompactionPhase::PreTurn,
+            CompactionOptions {
+                initial_context_injection: InitialContextInjection::DoNotInject,
+                reason: CompactionReason::ContextLimit,
+                phase: CompactionPhase::PreTurn,
+                provider_mode: CompactionProviderMode::SameProvider,
+            },
         )
         .await?;
     }
@@ -1061,7 +1071,40 @@ async fn maybe_run_previous_model_inline_compact(
         previous_turn_settings.comp_hash.as_deref(),
         turn_context.model_info.comp_hash.as_deref(),
     );
+    let provider_changed = previous_turn_settings
+        .model_provider
+        .as_deref()
+        .is_some_and(|provider| provider != turn_context.config.model_provider_id);
     let previous_model = previous_turn_settings.model;
+
+    // Model names are provider-scoped. For a provider migration, use the fully resolved current
+    // context and the current session client instead of pairing the old model with the new client.
+    if provider_changed {
+        sess.recompute_token_usage(turn_context.as_ref()).await;
+        let step_context = sess
+            .capture_step_context(Arc::clone(turn_context), cancellation_token)
+            .await?;
+        run_auto_compact(
+            sess,
+            step_context,
+            /*fallback_step_context*/ None,
+            client_session,
+            CompactionOptions {
+                initial_context_injection: InitialContextInjection::DoNotInject,
+                reason: CompactionReason::CompHashChanged,
+                phase: CompactionPhase::PreTurn,
+                provider_mode: CompactionProviderMode::CrossProvider,
+            },
+        )
+        .await?;
+        // Persist the effective settings only after migration succeeds. This keeps thread/list
+        // provider filtering aligned with the provider that can consume the stored history.
+        sess.persist_rollout_items(&[codex_protocol::protocol::RolloutItem::EventMsg(
+            super::handlers::thread_settings_applied_event(sess).await,
+        )])
+        .await;
+        return Ok(());
+    }
     let previous_model_turn_context = Arc::new(
         turn_context
             .with_model(previous_model.clone(), &sess.services.models_manager)
@@ -1084,9 +1127,12 @@ async fn maybe_run_previous_model_inline_compact(
             step_context,
             fallback_step_context,
             client_session,
-            InitialContextInjection::DoNotInject,
-            CompactionReason::CompHashChanged,
-            CompactionPhase::PreTurn,
+            CompactionOptions {
+                initial_context_injection: InitialContextInjection::DoNotInject,
+                reason: CompactionReason::CompHashChanged,
+                phase: CompactionPhase::PreTurn,
+                provider_mode: CompactionProviderMode::SameProvider,
+            },
         )
         .await?;
         return Ok(());
@@ -1132,9 +1178,12 @@ async fn maybe_run_previous_model_inline_compact(
             step_context,
             fallback_step_context,
             client_session,
-            InitialContextInjection::DoNotInject,
-            CompactionReason::ModelDownshift,
-            CompactionPhase::PreTurn,
+            CompactionOptions {
+                initial_context_injection: InitialContextInjection::DoNotInject,
+                reason: CompactionReason::ModelDownshift,
+                phase: CompactionPhase::PreTurn,
+                provider_mode: CompactionProviderMode::SameProvider,
+            },
         )
         .await?;
     }
@@ -1144,20 +1193,26 @@ async fn maybe_run_previous_model_inline_compact(
 #[instrument(
     level = "trace",
     skip_all,
-    fields(reason = ?reason, phase = ?phase)
+    fields(reason = ?options.reason, phase = ?options.phase)
 )]
 async fn run_auto_compact(
     sess: &Arc<Session>,
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
-    initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    options: CompactionOptions,
 ) -> CodexResult<()> {
+    let CompactionOptions {
+        initial_context_injection,
+        reason,
+        phase,
+        provider_mode,
+    } = options;
     let turn_context = &step_context.turn;
     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
-    if turn_context.config.features.enabled(Feature::TokenBudget) {
+    if provider_mode == CompactionProviderMode::SameProvider
+        && turn_context.config.features.enabled(Feature::TokenBudget)
+    {
         // Compaction is the reset request, so force a new context window
         // instead of consuming a pending `new_context` tool request.
         crate::compact_token_budget::run_inline_auto_compact_task(
@@ -1169,7 +1224,9 @@ async fn run_auto_compact(
         return Ok(());
     }
 
-    if should_use_remote_compact_task(turn_context.provider.info()) {
+    if provider_mode == CompactionProviderMode::SameProvider
+        && should_use_remote_compact_task(turn_context.provider.info())
+    {
         if turn_context
             .config
             .features
@@ -1216,9 +1273,12 @@ async fn run_auto_compact(
         run_inline_auto_compact_task(
             Arc::clone(sess),
             Arc::clone(turn_context),
-            initial_context_injection,
-            reason,
-            phase,
+            CompactionOptions {
+                initial_context_injection,
+                reason,
+                phase,
+                provider_mode,
+            },
         )
         .await?;
     }

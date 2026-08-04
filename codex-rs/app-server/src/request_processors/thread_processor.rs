@@ -3558,13 +3558,12 @@ impl ThreadRequestProcessor {
                     }
                 }
 
-                // Preserve rejoin semantics when another client can still observe
-                // the loaded thread or shutdown did not complete.
-                tracing::warn!(
-                    "thread/resume overrides ignored for loaded thread {}: {}",
-                    existing_thread_id,
+                // Returning the loaded thread here would silently ignore provider/model
+                // overrides while the caller believes the migration succeeded.
+                return Err(invalid_request(format!(
+                    "cannot apply thread/resume overrides while thread {existing_thread_id} is loaded: {}. Close the active thread and retry",
                     mismatch_details.join("; ")
-                );
+                )));
             }
             let redact_resume_payloads =
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());

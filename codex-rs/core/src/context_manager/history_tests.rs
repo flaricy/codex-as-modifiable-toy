@@ -257,6 +257,7 @@ fn reference_context_item() -> TurnContextItem {
         network: None,
         file_system_sandbox_policy: None,
         model: "gpt-test".to_string(),
+        model_provider: None,
         comp_hash: None,
         personality: None,
         collaboration_mode: None,
@@ -369,6 +370,82 @@ fn filters_non_api_messages() {
             }
         ]
     );
+}
+
+#[test]
+fn provider_portable_history_removes_provider_state_and_preserves_tool_pairing() {
+    let metadata = Some(InternalChatMessageMetadataPassthrough {
+        turn_id: Some("provider-turn".to_string()),
+        ..Default::default()
+    });
+    let items = vec![
+        ResponseItem::Reasoning {
+            id: Some(ResponseItemId::with_suffix("rs", "provider")),
+            summary: Vec::new(),
+            content: None,
+            encrypted_content: Some("encrypted-reasoning".to_string()),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
+        },
+        ResponseItem::FunctionCall {
+            id: Some(ResponseItemId::with_suffix("fc", "provider")),
+            name: "lookup".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: "call-portable".to_string(),
+            encrypted_function_args: Some(vec!["encrypted-args".to_string()]),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
+        },
+        ResponseItem::FunctionCallOutput {
+            id: Some(ResponseItemId::with_suffix("fco", "provider")),
+            call_id: "call-portable".to_string(),
+            output: FunctionCallOutputPayload::from_text("result".to_string()),
+            internal_chat_message_metadata_passthrough: metadata.clone(),
+        },
+        ResponseItem::Message {
+            id: Some(ResponseItemId::with_suffix("msg", "provider")),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "portable answer".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: metadata,
+        },
+    ];
+    let mut history = create_history_with_items(items);
+    let previous_version = history.history_version();
+
+    history.make_provider_portable();
+
+    assert_eq!(
+        history.raw_items(),
+        &[
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "lookup".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call-portable".to_string(),
+                encrypted_function_args: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "call-portable".to_string(),
+                output: FunctionCallOutputPayload::from_text("result".to_string()),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "portable answer".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+    assert_eq!(history.history_version(), previous_version.wrapping_add(1));
 }
 
 #[test]

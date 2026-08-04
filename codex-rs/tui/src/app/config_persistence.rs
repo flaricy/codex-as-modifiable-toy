@@ -48,7 +48,7 @@ pub(super) fn resume_model_settings_for_overrides(
     {
         crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig
     } else {
-        crate::app_server_session::ResumeModelSettings::RestoreFromThread
+        crate::app_server_session::ResumeModelSettings::OverrideIfProviderDiffers
     }
 }
 
@@ -1376,7 +1376,7 @@ mod tests {
 
         assert_eq!(
             app.resume_model_settings(),
-            crate::app_server_session::ResumeModelSettings::RestoreFromThread
+            crate::app_server_session::ResumeModelSettings::OverrideIfProviderDiffers
         );
         let profile_path = test_path_buf("/tmp/work.config.toml").abs();
         let profile = "work"
@@ -1397,7 +1397,7 @@ mod tests {
             ),
             (
                 "sandbox_mode",
-                crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+                crate::app_server_session::ResumeModelSettings::OverrideIfProviderDiffers,
             ),
         ] {
             let config = TomlValue::Table(toml::map::Map::from_iter([(
@@ -1432,7 +1432,7 @@ mod tests {
             .expect("user config layer stack");
         assert_eq!(
             app.resume_model_settings(),
-            crate::app_server_session::ResumeModelSettings::RestoreFromThread
+            crate::app_server_session::ResumeModelSettings::OverrideIfProviderDiffers
         );
 
         app.harness_overrides.model_provider = Some("custom-provider".to_string());

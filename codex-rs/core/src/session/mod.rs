@@ -293,6 +293,7 @@ impl SteerInputError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreviousTurnSettings {
     pub(crate) model: String,
+    pub(crate) model_provider: Option<String>,
     pub(crate) comp_hash: Option<String>,
     pub(crate) realtime_active: Option<bool>,
 }
@@ -631,6 +632,17 @@ impl Session {
         // 1. config.base_instructions override
         // 2. conversation history => session_meta.base_instructions
         // 3. rendered instructions_template for current model
+        //
+        // Session metadata stores the instructions rendered when the thread was created. They
+        // are not safe to reuse after changing providers because provider instruction contracts
+        // can differ. Same-provider model switches preserve the established thread behavior.
+        let history_items = conversation_history.get_rollout_items();
+        let history_provider = history_items.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta) => meta.meta.model_provider.as_deref(),
+            _ => None,
+        });
+        let history_base_instructions_are_compatible =
+            history_provider.is_none_or(|provider| provider == config.model_provider_id);
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
@@ -648,7 +660,11 @@ impl Session {
         let base_instructions = config
             .base_instructions
             .clone()
-            .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
+            .or_else(|| {
+                history_base_instructions_are_compatible
+                    .then(|| conversation_history.get_base_instructions().map(|s| s.text))
+                    .flatten()
+            })
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
 
         // Dynamic tools are defined at thread start and persisted in rollout session metadata.
