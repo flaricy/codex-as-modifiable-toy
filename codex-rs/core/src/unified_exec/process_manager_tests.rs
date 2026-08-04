@@ -379,6 +379,7 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         process_id: 123,
         yield_time_ms: 1000,
         max_output_tokens: None,
+        on_exit: crate::unified_exec::ExecCommandOnExit::None,
         #[allow(deprecated)]
         cwd: turn.cwd.clone().into(),
         #[allow(deprecated)]
@@ -549,6 +550,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 process_id,
                 cwd: cwd.clone(),
                 initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+                completion_wakeup: None,
                 hook_command: format!("command-{process_id}"),
                 tty: false,
                 network_approval: None,

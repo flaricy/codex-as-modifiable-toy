@@ -57,6 +57,15 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
             )),
         ),
+        (
+            "on_exit".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("none"), json!("wake")],
+                Some(
+                    "Action after a yielded command exits. Use `wake` for long-running work that should resume automatically; after registration is confirmed, do not poll that session with `write_stdin`. Defaults to `none`.".to_string(),
+                ),
+            ),
+        ),
     ]);
     if include_shell_parameter {
         properties.insert(
@@ -284,6 +293,10 @@ fn unified_exec_output_schema() -> Value {
             "original_token_count": {
                 "type": "number",
                 "description": "Approximate token count before output truncation."
+            },
+            "completion_notification": {
+                "type": "string",
+                "description": "Registration state for an automatic completion notification."
             },
             "output": {
                 "type": "string",

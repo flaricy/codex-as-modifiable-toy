@@ -55,8 +55,11 @@ use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminal;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
@@ -1213,6 +1216,35 @@ impl AppServerSession {
             .await
             .wrap_err("thread/backgroundTerminals/clean failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn thread_background_terminals_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<Vec<ThreadBackgroundTerminal>> {
+        let mut cursor = None;
+        let mut terminals = Vec::new();
+        loop {
+            let request_id = self.next_request_id();
+            let response: ThreadBackgroundTerminalsListResponse = self
+                .client
+                .request_typed(ClientRequest::ThreadBackgroundTerminalsList {
+                    request_id,
+                    params: ThreadBackgroundTerminalsListParams {
+                        thread_id: thread_id.to_string(),
+                        cursor,
+                        limit: None,
+                    },
+                })
+                .await
+                .wrap_err("thread/backgroundTerminals/list failed in TUI")?;
+            terminals.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                break;
+            };
+            cursor = Some(next_cursor);
+        }
+        Ok(terminals)
     }
 
     pub(crate) async fn review_start(
