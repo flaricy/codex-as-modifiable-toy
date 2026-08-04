@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -34,6 +35,7 @@ use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::state_db;
 use codex_shell_command::parse_command::parse_shell_script;
+use codex_tools::NamespaceToolSpecMode;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
@@ -335,15 +337,33 @@ impl CoreToolRuntime for ExposureOverride {
 
 pub struct ToolRegistry {
     tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>,
+    flat_tool_aliases: HashMap<ToolName, Arc<dyn CoreToolRuntime>>,
 }
 
 impl ToolRegistry {
     fn new(tools: HashMap<ToolName, Arc<dyn CoreToolRuntime>>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            flat_tool_aliases: HashMap::new(),
+        }
+    }
+
+    #[cfg(test)]
+    #[instrument(level = "trace", skip_all)]
+    pub(crate) fn from_tools(tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>) -> Self {
+        Self::from_tools_with_namespace_tool_spec_mode(
+            tools,
+            NamespaceToolSpecMode::Preserve,
+            &BTreeSet::new(),
+        )
     }
 
     #[instrument(level = "trace", skip_all)]
-    pub(crate) fn from_tools(tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>) -> Self {
+    pub(crate) fn from_tools_with_namespace_tool_spec_mode(
+        tools: impl IntoIterator<Item = Arc<dyn CoreToolRuntime>>,
+        namespace_tool_spec_mode: NamespaceToolSpecMode,
+        suppressed_flat_aliases: &BTreeSet<String>,
+    ) -> Self {
         let mut tools_by_name = HashMap::new();
         for tool in tools {
             let name = tool.tool_name();
@@ -353,7 +373,12 @@ impl ToolRegistry {
             }
             tools_by_name.insert(name, tool);
         }
-        Self::new(tools_by_name)
+
+        let mut registry = Self::new(tools_by_name);
+        if namespace_tool_spec_mode == NamespaceToolSpecMode::Flatten {
+            registry.add_flat_tool_aliases(suppressed_flat_aliases);
+        }
+        registry
     }
 
     pub(crate) fn deferred_tool_namespaces(&self) -> BTreeMap<String, String> {
@@ -398,7 +423,37 @@ impl ToolRegistry {
     }
 
     fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools.get(name).map(Arc::clone)
+        self.resolved_tool(name).map(|(_, tool)| tool)
+    }
+
+    fn resolved_tool(&self, name: &ToolName) -> Option<(ToolName, Arc<dyn CoreToolRuntime>)> {
+        self.tools
+            .get(name)
+            .map(|tool| (name.clone(), Arc::clone(tool)))
+            .or_else(|| {
+                self.flat_tool_aliases
+                    .get(name)
+                    .map(|tool| (tool.tool_name(), Arc::clone(tool)))
+            })
+    }
+
+    fn add_flat_tool_aliases(&mut self, suppressed_flat_aliases: &BTreeSet<String>) {
+        for (name, tool) in &self.tools {
+            if name.namespace.is_none() {
+                continue;
+            }
+            let flat_alias = ToolName::plain(name.canonical_flat_name().into_owned());
+            if suppressed_flat_aliases.contains(flat_alias.name.as_str()) {
+                continue;
+            }
+            if self.tools.contains_key(&flat_alias)
+                || self.flat_tool_aliases.contains_key(&flat_alias)
+            {
+                error_or_panic(format!("tool {flat_alias} already registered"));
+                continue;
+            }
+            self.flat_tool_aliases.insert(flat_alias, Arc::clone(tool));
+        }
     }
 
     pub(crate) fn mcp_server_name(&self, name: &ToolName) -> Option<&str> {
@@ -475,8 +530,8 @@ impl ToolRegistry {
         }
 
         let dispatch_trace = ToolDispatchTrace::start(&invocation);
-        let tool = match self.tool(&tool_name) {
-            Some(tool) => tool,
+        let (resolved_tool_name, tool) = match self.resolved_tool(&tool_name) {
+            Some(resolved_tool) => resolved_tool,
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
@@ -495,6 +550,8 @@ impl ToolRegistry {
                 return Err(err);
             }
         };
+        let resolved_tool_name_for_hooks = resolved_tool_name.clone();
+        invocation.tool_name = resolved_tool_name;
 
         let telemetry_tags = tool.telemetry_tags(&invocation).await;
         let mut tool_result_tags =
@@ -528,7 +585,12 @@ impl ToolRegistry {
 
         notify_tool_start(&invocation).await;
 
-        if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
+        if let Some(mut pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
+            add_model_visible_flat_alias(
+                &mut pre_tool_use_payload.tool_name,
+                &tool_name,
+                &resolved_tool_name_for_hooks,
+            );
             match run_pre_tool_use_hooks(
                 &invocation.session,
                 &invocation.turn,
@@ -624,7 +686,7 @@ impl ToolRegistry {
             Err(_) => false,
         };
         emit_metric_for_tool_read(&invocation, success);
-        let post_tool_use_payload = if success {
+        let mut post_tool_use_payload = if success {
             let guard = response_cell.lock().await;
             guard
                 .as_ref()
@@ -632,6 +694,13 @@ impl ToolRegistry {
         } else {
             None
         };
+        if let Some(post_tool_use_payload) = post_tool_use_payload.as_mut() {
+            add_model_visible_flat_alias(
+                &mut post_tool_use_payload.tool_name,
+                &tool_name,
+                &resolved_tool_name_for_hooks,
+            );
+        }
         let post_tool_use_outcome = if let Some(post_tool_use_payload) = post_tool_use_payload {
             Some(
                 run_post_tool_use_hooks(
@@ -773,6 +842,18 @@ fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {
     }
 
     HookToolName::new(flat_tool_name(&invocation.tool_name).into_owned())
+}
+
+fn add_model_visible_flat_alias(
+    hook_tool_name: &mut HookToolName,
+    requested_tool_name: &ToolName,
+    resolved_tool_name: &ToolName,
+) {
+    // A differing plain request can only come from `flat_tool_aliases`, whose
+    // keys are the function names exposed when namespace wrappers are flattened.
+    if requested_tool_name.namespace.is_none() && requested_tool_name != resolved_tool_name {
+        hook_tool_name.add_matcher_alias(requested_tool_name.name.clone());
+    }
 }
 
 fn function_hook_tool_input(arguments: &str) -> Value {

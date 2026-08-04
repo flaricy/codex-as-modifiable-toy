@@ -200,7 +200,8 @@ async fn probe_with(
             dynamic_tools: inputs.dynamic_tools.as_slice(),
         },
         &Default::default(),
-    );
+    )
+    .expect("tool router should build");
     ToolPlanProbe::from_router(router)
 }
 
@@ -275,6 +276,19 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
     let provider_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
     update_config(turn, |config| {
         config.model_provider_id = AMAZON_BEDROCK_PROVIDER_ID.to_string();
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_custom_provider_without_namespaces(turn: &mut TurnContext) {
+    let provider_info = ModelProviderInfo {
+        name: "DeepSeek".to_string(),
+        base_url: Some("https://api.deepseek.com".to_string()),
+        ..ModelProviderInfo::default()
+    };
+    update_config(turn, |config| {
+        config.model_provider_id = "deepseek".to_string();
         config.model_provider = provider_info.clone();
     });
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
@@ -829,19 +843,22 @@ async fn environment_tools_follow_the_step_context() {
         &turn.config,
     )));
 
-    let plan = ToolPlanProbe::from_router(ToolRouter::from_context(
-        turn.as_ref(),
-        &environments,
-        mcp.as_ref(),
-        ToolRouterParams {
-            tool_runtimes: Vec::new(),
-            tool_suggest_candidates: None,
-            extension_tool_executors: Vec::new(),
-            wait_for_environment_tool_config: None,
-            dynamic_tools: &[],
-        },
-        &Default::default(),
-    ));
+    let plan = ToolPlanProbe::from_router(
+        ToolRouter::from_context(
+            turn.as_ref(),
+            &environments,
+            mcp.as_ref(),
+            ToolRouterParams {
+                tool_runtimes: Vec::new(),
+                tool_suggest_candidates: None,
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: &[],
+            },
+            &Default::default(),
+        )
+        .expect("tool router should build"),
+    );
 
     plan.assert_visible_contains(&["exec_command", "apply_patch", "view_image"]);
 }
@@ -938,6 +955,22 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         direct_mcp.namespace_function_names("mcp__direct"),
         &["lookup".to_string()]
     );
+
+    let flattened_direct_mcp = probe_with(
+        use_custom_provider_without_namespaces,
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "direct",
+                "mcp__direct",
+                "lookup",
+                ToolExposure::Direct,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    flattened_direct_mcp.assert_visible_contains(&["mcp__direct__lookup"]);
+    flattened_direct_mcp.assert_visible_lacks(&["mcp__direct"]);
 
     let searchable_mcp = ToolPlanInputs {
         tool_runtimes: vec![mcp_runtime(
@@ -1044,7 +1077,8 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             dynamic_tools: &[],
         },
         &cache,
-    );
+    )
+    .expect("first tool router should build");
     let first_plan = ToolPlanProbe::from_router(first_router);
 
     let (_session, mut second_turn) = make_session_and_context().await;
@@ -1068,7 +1102,8 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
             dynamic_tools: &[],
         },
         &cache,
-    );
+    )
+    .expect("second tool router should build");
     let second_plan = ToolPlanProbe::from_router(second_router);
 
     let ToolSpec::ToolSearch {
@@ -1123,7 +1158,8 @@ async fn tool_search_cache_rebuilds_when_deferred_world_state_changes() {
                 dynamic_tools: &[],
             },
             &cache,
-        );
+        )
+        .expect("tool router should build");
         let plan = ToolPlanProbe::from_router(router);
         let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
             panic!("expected visible tool_search spec");
