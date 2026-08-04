@@ -156,7 +156,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            namespace_tools: true,
+            namespace_tools: self.info.namespace_tools.unwrap_or(true),
             encrypted_collaboration_messages: false,
             image_generation: false,
             web_search: self.endpoint == BedrockEndpoint::Mantle,
@@ -419,6 +419,15 @@ mod tests {
                 remote_compaction: RemoteCompactionSupport::V1,
             }
         );
+    }
+
+    #[test]
+    fn capabilities_namespace_tools_honors_explicit_opt_out() {
+        let mut info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+        info.namespace_tools = Some(false);
+        let provider = AmazonBedrockModelProvider::new(info, /*auth_manager*/ None);
+
+        assert!(!provider.capabilities().namespace_tools);
     }
 
     #[test]

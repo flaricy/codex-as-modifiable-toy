@@ -72,6 +72,7 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
+use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -80,6 +81,7 @@ use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironmentMode;
+use codex_tools::NamespaceToolSpecMode;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolExposures;
 use codex_tools::ToolName;
@@ -94,7 +96,9 @@ use codex_tools::request_user_input_available_modes;
 use codex_tools::shell_command_backend_for_features;
 use codex_tools::shell_type_for_model_and_features;
 use futures::future::BoxFuture;
+use codex_tools::serialize_tool_specs;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::btree_map::Entry;
@@ -435,8 +439,21 @@ pub(crate) fn finalize_tool_router(
         }
     }
 
+    if namespace_tool_spec_mode(turn_context) == NamespaceToolSpecMode::Flatten {
+        let suppressed_flat_aliases =
+            validate_flattened_tool_name_collisions(turn_context, &registry)
+                .map_err(CodexErr::InvalidRequest)?;
+        registry
+            .configure_flat_aliases(&suppressed_flat_aliases)
+            .map_err(CodexErr::InvalidRequest)?;
+    }
+
     let model_visible_specs =
         build_model_visible_specs(turn_context, &registry, &code_mode_tool_names, hosted_specs);
+    if namespace_tool_spec_mode(turn_context) == NamespaceToolSpecMode::Flatten {
+        validate_flattened_model_visible_names(&model_visible_specs)
+            .map_err(CodexErr::InvalidRequest)?;
+    }
     if include_tool_namespaces_info {
         turn_context
             .turn_metadata_state
@@ -513,12 +530,10 @@ fn build_model_visible_specs(
     }
     specs.extend(hosted_specs);
 
-    merge_into_namespaces(specs)
-        .into_iter()
-        .filter(|spec| {
-            namespace_tools_enabled(turn_context) || !matches!(spec, ToolSpec::Namespace(_))
-        })
-        .collect()
+    serialize_tool_specs(
+        merge_into_namespaces(specs),
+        namespace_tool_spec_mode(turn_context),
+    )
 }
 
 fn spec_for_model_request(
@@ -579,7 +594,7 @@ fn hosted_model_tool_specs(
 }
 
 pub(crate) fn search_tool_enabled(turn_context: &TurnContext) -> bool {
-    turn_context.model_info.supports_search_tool && namespace_tools_enabled(turn_context)
+    turn_context.model_info.supports_search_tool
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
@@ -591,6 +606,102 @@ pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
 
 fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
     turn_context.provider.capabilities().namespace_tools
+}
+
+fn namespace_tool_spec_mode(turn_context: &TurnContext) -> NamespaceToolSpecMode {
+    if namespace_tools_enabled(turn_context) {
+        NamespaceToolSpecMode::Preserve
+    } else {
+        NamespaceToolSpecMode::Flatten
+    }
+}
+
+fn validate_flattened_tool_name_collisions(
+    turn_context: &TurnContext,
+    registry: &ToolRegistry,
+) -> Result<BTreeSet<String>, String> {
+    let mut logical_names_by_flat_name = BTreeMap::<String, BTreeMap<ToolName, bool>>::new();
+    for tool in registry.entries() {
+        let tool_name = tool.runtime.tool_name();
+        let reachable = (tool.exposure.is_direct()
+            && !is_hidden_by_code_mode_only(turn_context, &tool_name, tool.exposure))
+            || (tool.exposure.is_deferred()
+                && search_tool_enabled(turn_context)
+                && tool.runtime.search_info().is_some());
+        logical_names_by_flat_name
+            .entry(tool_name.canonical_flat_name().into_owned())
+            .or_default()
+            .entry(tool_name)
+            .and_modify(|already_reachable| *already_reachable |= reachable)
+            .or_insert(reachable);
+    }
+
+    let mut collisions = Vec::new();
+    let mut suppressed_flat_aliases = BTreeSet::new();
+    for (flat_name, logical_names) in logical_names_by_flat_name {
+        if logical_names.len() <= 1 {
+            continue;
+        }
+        let has_reachable_namespaced_tool = logical_names
+            .iter()
+            .any(|(tool_name, reachable)| *reachable && tool_name.namespace.is_some());
+        let reachable_tool_count = logical_names
+            .values()
+            .filter(|reachable| **reachable)
+            .count();
+        let logical_names_text = logical_names
+            .keys()
+            .map(|tool_name| match tool_name.namespace.as_deref() {
+                Some(namespace) => {
+                    format!("namespace `{namespace}` tool `{}`", tool_name.name)
+                }
+                None => format!("plain tool `{}`", tool_name.name),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let collision = format!("`{flat_name}`: {logical_names_text}");
+        if has_reachable_namespaced_tool || reachable_tool_count > 1 {
+            collisions.push(collision);
+        } else {
+            suppressed_flat_aliases.insert(flat_name);
+        }
+    }
+
+    if collisions.is_empty() {
+        Ok(suppressed_flat_aliases)
+    } else {
+        Err(format!(
+            "cannot flatten namespace tools because canonical flat tool names collide: {}",
+            collisions.join("; ")
+        ))
+    }
+}
+
+fn validate_flattened_model_visible_names(specs: &[ToolSpec]) -> Result<(), String> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for spec in specs {
+        let name = match spec {
+            ToolSpec::Function(tool) => tool.name.as_str(),
+            ToolSpec::Freeform(tool) => tool.name.as_str(),
+            ToolSpec::Namespace(_)
+            | ToolSpec::ToolSearch { .. }
+            | ToolSpec::WebSearch { .. } => continue,
+        };
+        *counts.entry(name).or_default() += 1;
+    }
+    let duplicates = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(name, _)| format!("`{name}`"))
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot expose duplicate model-visible tool names after namespace flattening: {}",
+            duplicates.join(", ")
+        ))
+    }
 }
 
 fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
@@ -632,7 +743,7 @@ fn image_generation_available(turn_context: &TurnContext) -> bool {
     }
 
     let capabilities = turn_context.provider.capabilities();
-    if !capabilities.image_generation || !capabilities.namespace_tools {
+    if !capabilities.image_generation {
         return false;
     }
 
@@ -937,8 +1048,7 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
 }
 
 fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
-    namespace_tools_enabled(turn_context)
-        && turn_context.provider.capabilities().web_search
+    turn_context.provider.capabilities().web_search
         && (turn_context.model_info.use_responses_lite
             || turn_context
                 .config
@@ -1138,9 +1248,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             } else {
                 ToolExposure::Direct
             };
-            let tool_namespace = namespace_tools_enabled(turn_context)
-                .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
-                .flatten();
+            let tool_namespace = turn_context.config.multi_agent_v2.tool_namespace.as_deref();
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
@@ -1265,7 +1373,11 @@ fn append_tool_search_executor(
     } else {
         ToolSearchSourceListing::Include
     };
-    let handler = tool_search_handler_cache.get_or_build(registry, source_listing);
+    let handler = tool_search_handler_cache.get_or_build_with_mode(
+        registry,
+        source_listing,
+        namespace_tool_spec_mode(turn_context),
+    );
     registry.register_trusted(handler);
 }
 

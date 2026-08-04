@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -269,6 +270,7 @@ pub(crate) struct RegisteredTool {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: IndexMap<ToolName, RegisteredTool>,
+    flat_tool_aliases: IndexMap<ToolName, ToolName>,
     first_collision: Option<ToolName>,
 }
 
@@ -376,6 +378,34 @@ impl ToolRegistry {
         self.first_collision.as_ref()
     }
 
+    pub(crate) fn configure_flat_aliases(
+        &mut self,
+        suppressed_flat_aliases: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        self.flat_tool_aliases.clear();
+        for tool_name in self.tools.keys() {
+            if tool_name.is_default_namespace() {
+                continue;
+            }
+            let flat_alias =
+                ToolName::plain(tool_name.canonical_flat_name().into_owned()).with_default_namespace();
+            if suppressed_flat_aliases.contains(flat_alias.name.as_str()) {
+                continue;
+            }
+            if self.tools.contains_key(&flat_alias)
+                || self.flat_tool_aliases.contains_key(&flat_alias)
+            {
+                return Err(format!(
+                    "cannot flatten namespace tools because canonical flat tool name `{}` collides",
+                    flat_alias.name
+                ));
+            }
+            self.flat_tool_aliases
+                .insert(flat_alias, tool_name.clone());
+        }
+        Ok(())
+    }
+
     pub(crate) fn remove(&mut self, tool_name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
         self.tools
             .shift_remove(&tool_name.clone().with_default_namespace())
@@ -438,9 +468,17 @@ impl ToolRegistry {
     }
 
     pub(crate) fn tool(&self, name: &ToolName) -> Option<Arc<dyn CoreToolRuntime>> {
-        self.tools
-            .get(&name.clone().with_default_namespace())
-            .map(|tool| Arc::clone(&tool.runtime))
+        self.resolved_tool(name)
+            .map(|(_, tool)| Arc::clone(&tool.runtime))
+    }
+
+    fn resolved_tool(&self, name: &ToolName) -> Option<(ToolName, &RegisteredTool)> {
+        let requested = name.clone().with_default_namespace();
+        if let Some(tool) = self.tools.get(&requested) {
+            return Some((requested, tool));
+        }
+        let resolved = self.flat_tool_aliases.get(&requested)?.clone();
+        self.tools.get(&resolved).map(|tool| (resolved, tool))
     }
 
     #[cfg(test)]
@@ -465,7 +503,7 @@ impl ToolRegistry {
     }
 
     pub(crate) fn supports_parallel_tool_calls(&self, name: &ToolName) -> Option<bool> {
-        let tool = self.tools.get(&name.clone().with_default_namespace())?;
+        let (_, tool) = self.resolved_tool(name)?;
         Some(tool.exposure != ToolExposure::Hidden && tool.runtime.supports_parallel_tool_calls())
     }
 
@@ -516,8 +554,10 @@ impl ToolRegistry {
         }
 
         let dispatch_trace = ToolDispatchTrace::start(&invocation);
-        let tool = match self.tool(&tool_name) {
-            Some(tool) => tool,
+        let (resolved_tool_name, tool) = match self.resolved_tool(&tool_name) {
+            Some((resolved_tool_name, tool)) => {
+                (resolved_tool_name, Arc::clone(&tool.runtime))
+            }
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
@@ -536,6 +576,8 @@ impl ToolRegistry {
                 return Err(err);
             }
         };
+        let resolved_tool_name_for_hooks = resolved_tool_name.clone();
+        invocation.tool_name = resolved_tool_name;
         let telemetry_tags = tool.telemetry_tags(&invocation);
         let mut tool_result_tags =
             Vec::with_capacity(base_tool_result_tags.len() + telemetry_tags.len() + 1);
@@ -566,7 +608,12 @@ impl ToolRegistry {
             return Err(err);
         }
 
-        if let Some(pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
+        if let Some(mut pre_tool_use_payload) = tool.pre_tool_use_payload(&invocation) {
+            add_model_visible_flat_alias(
+                &mut pre_tool_use_payload.tool_name,
+                &tool_name,
+                &resolved_tool_name_for_hooks,
+            );
             match run_pre_tool_use_hooks(
                 &invocation.session,
                 &invocation.turn,
@@ -664,7 +711,7 @@ impl ToolRegistry {
             Err(_) => false,
         };
         emit_metric_for_tool_read(&invocation, success);
-        let post_tool_use_payload = if success {
+        let mut post_tool_use_payload = if success {
             let guard = response_cell.lock().await;
             guard
                 .as_ref()
@@ -672,6 +719,13 @@ impl ToolRegistry {
         } else {
             None
         };
+        if let Some(post_tool_use_payload) = post_tool_use_payload.as_mut() {
+            add_model_visible_flat_alias(
+                &mut post_tool_use_payload.tool_name,
+                &tool_name,
+                &resolved_tool_name_for_hooks,
+            );
+        }
         let post_tool_use_outcome = if let Some(post_tool_use_payload) = post_tool_use_payload {
             Some(
                 run_post_tool_use_hooks(
@@ -812,6 +866,16 @@ fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {
     }
 
     HookToolName::new(flat_tool_name(&invocation.tool_name).into_owned())
+}
+
+fn add_model_visible_flat_alias(
+    hook_tool_name: &mut HookToolName,
+    requested_tool_name: &ToolName,
+    resolved_tool_name: &ToolName,
+) {
+    if requested_tool_name.namespace.is_none() && requested_tool_name != resolved_tool_name {
+        hook_tool_name.add_matcher_alias(requested_tool_name.name.clone());
+    }
 }
 
 fn function_hook_tool_input(arguments: &str) -> Value {

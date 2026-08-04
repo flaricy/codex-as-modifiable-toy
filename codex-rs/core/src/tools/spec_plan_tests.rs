@@ -303,6 +303,19 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
     turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
 }
 
+fn use_custom_provider_without_namespaces(turn: &mut TurnContext) {
+    let mut provider_info = turn.config.model_provider.clone();
+    provider_info.name = "Custom".to_string();
+    provider_info.base_url = Some("https://example.test/v1".to_string());
+    provider_info.requires_openai_auth = false;
+    provider_info.namespace_tools = None;
+    update_config(turn, |config| {
+        config.model_provider_id = "custom".to_string();
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
 struct TestNamespaceExtensionTool {
     namespace: &'static str,
     tool_name: &'static str,
@@ -1119,6 +1132,22 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         direct_mcp.namespace_function_names("mcp__direct"),
         &["lookup".to_string()]
     );
+
+    let flattened_direct_mcp = probe_with(
+        use_custom_provider_without_namespaces,
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "direct",
+                "mcp__direct",
+                "lookup",
+                ToolExposure::Direct,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    flattened_direct_mcp.assert_visible_contains(&["mcp__direct__lookup"]);
+    flattened_direct_mcp.assert_visible_lacks(&["mcp__direct"]);
 
     let searchable_mcp = || ToolPlanInputs {
         tool_runtimes: vec![mcp_runtime(

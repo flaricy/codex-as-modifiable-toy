@@ -12,6 +12,7 @@ use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
+use codex_tools::NamespaceToolSpecMode;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
@@ -19,7 +20,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
-use codex_tools::coalesce_loadable_tool_specs;
+use codex_tools::serialize_loadable_tool_specs;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
@@ -28,6 +29,7 @@ use tracing::instrument;
 pub struct ToolSearchHandler {
     search_infos: Vec<ToolSearchInfo>,
     source_listing: ToolSearchSourceListing,
+    namespace_tool_spec_mode: NamespaceToolSpecMode,
     spec: ToolSpec,
     search_engine: SearchEngine<usize>,
 }
@@ -54,6 +56,20 @@ impl ToolSearchHandlerCache {
         registry: &ToolRegistry,
         source_listing: ToolSearchSourceListing,
     ) -> Arc<ToolSearchHandler> {
+        self.get_or_build_with_mode(
+            registry,
+            source_listing,
+            NamespaceToolSpecMode::Preserve,
+        )
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    pub(crate) fn get_or_build_with_mode(
+        &self,
+        registry: &ToolRegistry,
+        source_listing: ToolSearchSourceListing,
+        namespace_tool_spec_mode: NamespaceToolSpecMode,
+    ) -> Arc<ToolSearchHandler> {
         let sources = registry
             .entries()
             .filter(|tool| tool.exposure.is_deferred())
@@ -73,6 +89,7 @@ impl ToolSearchHandlerCache {
             let cached = self.cached();
             if let Some(cached) = cached.as_ref()
                 && cached.handler.source_listing == source_listing
+                && cached.handler.namespace_tool_spec_mode == namespace_tool_spec_mode
                 && Self::sources_match(&cached.sources, &sources)
             {
                 return Arc::clone(&cached.handler);
@@ -89,10 +106,15 @@ impl ToolSearchHandlerCache {
             })
             .collect();
 
-        let handler = Arc::new(ToolSearchHandler::new(search_infos, source_listing));
+        let handler = Arc::new(ToolSearchHandler::new_with_mode(
+            search_infos,
+            source_listing,
+            namespace_tool_spec_mode,
+        ));
         let mut cached = self.cached();
         if let Some(cached) = cached.as_ref()
             && cached.handler.source_listing == source_listing
+            && cached.handler.namespace_tool_spec_mode == namespace_tool_spec_mode
             && Self::sources_match(&cached.sources, &sources)
         {
             return Arc::clone(&cached.handler);
@@ -139,6 +161,18 @@ impl ToolSearchHandler {
         search_infos: Vec<ToolSearchInfo>,
         source_listing: ToolSearchSourceListing,
     ) -> Self {
+        Self::new_with_mode(
+            search_infos,
+            source_listing,
+            NamespaceToolSpecMode::Preserve,
+        )
+    }
+
+    pub(crate) fn new_with_mode(
+        search_infos: Vec<ToolSearchInfo>,
+        source_listing: ToolSearchSourceListing,
+        namespace_tool_spec_mode: NamespaceToolSpecMode,
+    ) -> Self {
         let search_source_infos = search_infos
             .iter()
             .filter_map(|search_info| search_info.source_info.clone())
@@ -160,6 +194,7 @@ impl ToolSearchHandler {
         Self {
             search_infos,
             source_listing,
+            namespace_tool_spec_mode,
             spec,
             search_engine,
         }
@@ -246,8 +281,9 @@ impl ToolSearchHandler {
         &self,
         results: impl IntoIterator<Item = &'a ToolSearchEntry>,
     ) -> Result<Vec<LoadableToolSpec>, FunctionCallError> {
-        Ok(coalesce_loadable_tool_specs(
+        Ok(serialize_loadable_tool_specs(
             results.into_iter().map(|entry| entry.output.clone()),
+            self.namespace_tool_spec_mode,
         ))
     }
 }
@@ -281,6 +317,13 @@ mod tests {
         let first = cache.get_or_build(&registry, ToolSearchSourceListing::Include);
         let second = cache.get_or_build(&registry, ToolSearchSourceListing::Include);
         assert!(Arc::ptr_eq(&first, &second));
+
+        let flattened = cache.get_or_build_with_mode(
+            &registry,
+            ToolSearchSourceListing::Include,
+            NamespaceToolSpecMode::Flatten,
+        );
+        assert!(!Arc::ptr_eq(&first, &flattened));
 
         let without_sources = cache.get_or_build(&registry, ToolSearchSourceListing::Omit);
         assert!(!Arc::ptr_eq(&first, &without_sources));
@@ -455,6 +498,39 @@ mod tests {
                     })],
                 }),
             ],
+        );
+    }
+
+    #[test]
+    fn search_results_flatten_mcp_namespaces_without_namespace_tools() {
+        let search_info = McpHandler::new(tool_info("calendar", "create_event", "Create events"))
+            .expect("MCP tool should convert")
+            .search_info()
+            .expect("MCP handler should return search info");
+        let handler = ToolSearchHandler::new_with_mode(
+            vec![search_info],
+            ToolSearchSourceListing::Include,
+            NamespaceToolSpecMode::Flatten,
+        );
+
+        let tools = handler
+            .search_output_tools([&handler.search_infos[0].entry])
+            .expect("MCP search output should serialize");
+
+        assert_eq!(
+            tools,
+            vec![LoadableToolSpec::Function(ResponsesApiTool {
+                name: "mcp__calendar__create_event".to_string(),
+                description: "Create events desktop tool".to_string(),
+                strict: false,
+                defer_loading: Some(true),
+                parameters: codex_tools::JsonSchema::object(
+                    Default::default(),
+                    /*required*/ None,
+                    Some(false.into()),
+                ),
+                output_schema: None,
+            })],
         );
     }
 

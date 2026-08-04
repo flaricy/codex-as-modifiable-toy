@@ -1,10 +1,12 @@
 use serde::Deserialize;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::fmt;
 
 /// Namespace used for top-level function and custom tools.
 pub const DEFAULT_FUNCTION_NAMESPACE: &str = "functions";
+const NAMESPACED_TOOL_NAME_DELIMITER: &str = "__";
 
 /// Identifies a callable tool, preserving the namespace split when the model
 /// provides one.
@@ -36,6 +38,14 @@ impl ToolName {
         }
     }
 
+    /// Canonical flat name used when a boundary cannot preserve the namespace split.
+    pub fn canonical_flat_name(&self) -> Cow<'_, str> {
+        match self.namespace.as_deref() {
+            Some(namespace) => Cow::Owned(join_namespaced_tool_name(namespace, &self.name)),
+            None => Cow::Borrowed(self.name.as_str()),
+        }
+    }
+
     pub fn with_default_namespace(mut self) -> Self {
         if self.namespace.as_deref().is_none_or(str::is_empty) {
             self.namespace = Some(DEFAULT_FUNCTION_NAMESPACE.to_string());
@@ -49,6 +59,12 @@ impl ToolName {
             None | Some("") | Some(DEFAULT_FUNCTION_NAMESPACE)
         )
     }
+}
+
+fn join_namespaced_tool_name(namespace: &str, name: &str) -> String {
+    let namespace = namespace.trim_end_matches('_');
+    let name = name.trim_start_matches('_');
+    format!("{namespace}{NAMESPACED_TOOL_NAME_DELIMITER}{name}")
 }
 
 impl fmt::Display for ToolName {
@@ -90,5 +106,23 @@ impl From<String> for ToolName {
 impl From<&str> for ToolName {
     fn from(name: &str) -> Self {
         Self::plain(name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn canonical_flat_name_inserts_one_namespace_delimiter() {
+        assert_eq!(
+            ToolName::namespaced("a__b", "__c")
+                .canonical_flat_name()
+                .as_ref(),
+            "a__b__c"
+        );
+        assert_eq!(ToolName::plain("plain").canonical_flat_name(), "plain");
     }
 }

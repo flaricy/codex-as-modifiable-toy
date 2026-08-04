@@ -52,6 +52,14 @@ pub enum LoadableToolSpec {
     Function(ResponsesApiTool),
     #[serde(rename = "namespace")]
     Namespace(ResponsesApiNamespace),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceToolSpecMode {
+    Preserve,
+    Flatten,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -96,6 +104,9 @@ pub fn coalesce_loadable_tool_specs(
             LoadableToolSpec::Function(tool) => {
                 coalesced_specs.push(LoadableToolSpec::Function(tool));
             }
+            LoadableToolSpec::Custom(tool) => {
+                coalesced_specs.push(LoadableToolSpec::Custom(tool));
+            }
             LoadableToolSpec::Namespace(mut namespace) => {
                 if let Some(existing_namespace) =
                     coalesced_specs.iter_mut().find_map(|spec| match spec {
@@ -104,7 +115,8 @@ pub fn coalesce_loadable_tool_specs(
                         {
                             Some(existing_namespace)
                         }
-                        LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => None,
+                        LoadableToolSpec::Function(_) | LoadableToolSpec::Custom(_)
+                        | LoadableToolSpec::Namespace(_) => None,
                     })
                 {
                     existing_namespace.tools.append(&mut namespace.tools);
@@ -115,6 +127,59 @@ pub fn coalesce_loadable_tool_specs(
         }
     }
     coalesced_specs
+}
+
+pub fn serialize_loadable_tool_specs(
+    specs: impl IntoIterator<Item = LoadableToolSpec>,
+    namespace_tool_spec_mode: NamespaceToolSpecMode,
+) -> Vec<LoadableToolSpec> {
+    let specs = coalesce_loadable_tool_specs(specs);
+    match namespace_tool_spec_mode {
+        NamespaceToolSpecMode::Preserve => specs,
+        NamespaceToolSpecMode::Flatten => specs
+            .into_iter()
+            .flat_map(|spec| match spec {
+                LoadableToolSpec::Function(tool) => vec![LoadableToolSpec::Function(tool)],
+                LoadableToolSpec::Custom(tool) => vec![LoadableToolSpec::Custom(tool)],
+                LoadableToolSpec::Namespace(namespace) => {
+                    flatten_responses_api_namespace(namespace)
+                        .into_iter()
+                        .map(|tool| match tool {
+                            ResponsesApiNamespaceTool::Function(tool) => {
+                                LoadableToolSpec::Function(tool)
+                            }
+                            ResponsesApiNamespaceTool::Custom(tool) => {
+                                LoadableToolSpec::Custom(tool)
+                            }
+                        })
+                        .collect()
+                }
+            })
+            .collect(),
+    }
+}
+
+pub fn flatten_responses_api_namespace(
+    namespace: ResponsesApiNamespace,
+) -> Vec<ResponsesApiNamespaceTool> {
+    namespace
+        .tools
+        .into_iter()
+        .map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(mut tool) => {
+                tool.name = ToolName::namespaced(namespace.name.as_str(), tool.name)
+                    .canonical_flat_name()
+                    .into_owned();
+                ResponsesApiNamespaceTool::Function(tool)
+            }
+            ResponsesApiNamespaceTool::Custom(mut tool) => {
+                tool.name = ToolName::namespaced(namespace.name.as_str(), tool.name)
+                    .canonical_flat_name()
+                    .into_owned();
+                ResponsesApiNamespaceTool::Custom(tool)
+            }
+        })
+        .collect()
 }
 
 pub fn mcp_tool_to_responses_api_tool(

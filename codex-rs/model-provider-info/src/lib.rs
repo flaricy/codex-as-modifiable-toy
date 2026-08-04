@@ -145,6 +145,9 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the standalone web-search endpoint.
     #[serde(default)]
     pub supports_standalone_web_search: bool,
+    /// Whether this provider accepts the Codex namespace tool wrapper.
+    #[serde(default)]
+    pub namespace_tools: Option<bool>,
 }
 
 /// AWS SigV4 auth configuration for a model provider.
@@ -368,6 +371,7 @@ impl ModelProviderInfo {
             requires_openai_auth: true,
             supports_websockets: true,
             supports_standalone_web_search: true,
+            namespace_tools: None,
         }
     }
 
@@ -402,6 +406,7 @@ impl ModelProviderInfo {
             requires_openai_auth: false,
             supports_websockets: false,
             supports_standalone_web_search: false,
+            namespace_tools: None,
         }
     }
 
@@ -501,10 +506,11 @@ pub fn merge_configured_model_providers(
             let auth_override = provider.auth.take();
             let aws_override = provider.aws.take();
             let http_headers_override = provider.http_headers.take();
+            let namespace_tools_override = provider.namespace_tools.take();
             if provider != ModelProviderInfo::default() {
                 return Err(format!(
                     "model_providers.{key} only supports changing \
-`base_url`, `auth`, `http_headers`, `aws.profile`, and `aws.region`; other non-default \
+`base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, and `namespace_tools`; other non-default \
 provider fields are not supported"
                 ));
             }
@@ -520,6 +526,9 @@ provider fields are not supported"
                         .http_headers
                         .get_or_insert_default()
                         .extend(http_headers_override);
+                }
+                if namespace_tools_override.is_some() {
+                    built_in_provider.namespace_tools = namespace_tools_override;
                 }
             }
         } else {
@@ -569,6 +578,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        namespace_tools: None,
     }
 }
 

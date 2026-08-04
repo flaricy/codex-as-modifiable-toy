@@ -304,7 +304,7 @@ mod thread_processor_behavior_tests {
             json!({"type": "null"}),
             /*defer_loading*/ false,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("invalid schema");
+        let err = validate_dynamic_tools(&tools, true).expect_err("invalid schema");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
     }
 
@@ -317,7 +317,7 @@ mod thread_processor_behavior_tests {
             json!({"properties": {}}),
             /*defer_loading*/ false,
         )];
-        validate_dynamic_tools(&tools).expect("valid schema");
+        validate_dynamic_tools(&tools, true).expect("valid schema");
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ false,
         )];
-        validate_dynamic_tools(&tools).expect("valid schema");
+        validate_dynamic_tools(&tools, true).expect("valid schema");
     }
 
     #[test]
@@ -362,7 +362,7 @@ mod thread_processor_behavior_tests {
                 /*defer_loading*/ true,
             ),
         ];
-        validate_dynamic_tools(&tools).expect("valid schema");
+        validate_dynamic_tools(&tools, true).expect("valid schema");
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ true,
         )];
-        validate_dynamic_tools(&tools).expect("valid schema");
+        validate_dynamic_tools(&tools, true).expect("valid schema");
     }
 
     #[test]
@@ -402,7 +402,7 @@ mod thread_processor_behavior_tests {
                 ],
             },
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("duplicate name");
+        let err = validate_dynamic_tools(&tools, true).expect_err("duplicate name");
         assert!(err.contains("codex_app"), "unexpected error: {err}");
         assert!(err.contains("my_tool"), "unexpected error: {err}");
     }
@@ -459,7 +459,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ false,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("empty namespace");
+        let err = validate_dynamic_tools(&tools, true).expect_err("empty namespace");
         assert!(err.contains("namespace"), "unexpected error: {err}");
     }
 
@@ -475,7 +475,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ false,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("reserved namespace");
+        let err = validate_dynamic_tools(&tools, true).expect_err("reserved namespace");
         assert!(err.contains("reserved"), "unexpected error: {err}");
     }
 
@@ -491,7 +491,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ false,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("invalid name");
+        let err = validate_dynamic_tools(&tools, true).expect_err("invalid name");
         assert!(err.contains("lookup.ticket"), "unexpected error: {err}");
         assert!(
             err.contains("Responses API") && err.contains("^[a-zA-Z0-9_-]+$"),
@@ -511,7 +511,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ true,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("invalid namespace");
+        let err = validate_dynamic_tools(&tools, true).expect_err("invalid namespace");
         assert!(err.contains("codex.app"), "unexpected error: {err}");
         assert!(
             err.contains("Responses API") && err.contains("^[a-zA-Z0-9_-]+$"),
@@ -532,7 +532,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ false,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("name too long");
+        let err = validate_dynamic_tools(&tools, true).expect_err("name too long");
         assert!(err.contains("at most 128"), "unexpected error: {err}");
         assert!(err.contains(&long_name), "unexpected error: {err}");
     }
@@ -550,7 +550,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ true,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("namespace too long");
+        let err = validate_dynamic_tools(&tools, true).expect_err("namespace too long");
         assert!(err.contains("at most 64"), "unexpected error: {err}");
         assert!(err.contains(&long_namespace), "unexpected error: {err}");
 
@@ -559,7 +559,7 @@ mod thread_processor_behavior_tests {
         };
         namespace.name = "tickets".to_string();
         namespace.description = "a".repeat(1025);
-        let err = validate_dynamic_tools(&tools).expect_err("namespace description too long");
+        let err = validate_dynamic_tools(&tools, true).expect_err("namespace description too long");
         assert!(err.contains("at most 1024"), "unexpected error: {err}");
     }
 
@@ -575,7 +575,7 @@ mod thread_processor_behavior_tests {
             }),
             /*defer_loading*/ true,
         )];
-        let err = validate_dynamic_tools(&tools).expect_err("reserved Responses namespace");
+        let err = validate_dynamic_tools(&tools, true).expect_err("reserved Responses namespace");
         assert!(err.contains("functions"), "unexpected error: {err}");
         assert!(err.contains("Responses API"), "unexpected error: {err}");
     }
@@ -737,6 +737,7 @@ mod thread_processor_behavior_tests {
             requires_openai_auth: false,
             supports_websockets: true,
             supports_standalone_web_search: false,
+            namespace_tools: None,
         };
         let config_manager = ConfigManager::new(
             temp_dir.path().to_path_buf(),
