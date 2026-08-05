@@ -8,7 +8,7 @@ use codex_app_server_protocol::ThreadBackgroundTerminal;
 
 impl ChatWidget {
     pub(crate) fn add_ps_output(&mut self, terminals: Vec<ThreadBackgroundTerminal>) {
-        let processes = terminals
+        let (authoritative_processes, processes) = terminals
             .into_iter()
             .map(|terminal| {
                 let recent_chunks = self
@@ -18,12 +18,26 @@ impl ChatWidget {
                     .map(|process| process.recent_chunks.clone())
                     .unwrap_or_default();
                 let command = split_command_string(&terminal.command);
-                history_cell::UnifiedExecProcessDetails {
-                    command_display: strip_bash_lc_and_escape(&command),
-                    recent_chunks,
-                }
+                let command_display = strip_bash_lc_and_escape(&command);
+                (
+                    UnifiedExecProcessSummary {
+                        key: terminal.process_id,
+                        call_id: terminal.item_id,
+                        command_display: command_display.clone(),
+                        recent_chunks: recent_chunks.clone(),
+                    },
+                    history_cell::UnifiedExecProcessDetails {
+                        command_display,
+                        recent_chunks,
+                    },
+                )
             })
-            .collect();
+            .unzip();
+        // The core process manager is authoritative. Reconcile the event-derived cache so a
+        // missed completion event (for example after remote termination) cannot leave a stale
+        // background-terminal count in the footer.
+        self.unified_exec_processes = authoritative_processes;
+        self.sync_unified_exec_footer();
         self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
 

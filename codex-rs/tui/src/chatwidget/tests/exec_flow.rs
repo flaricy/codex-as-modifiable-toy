@@ -1378,6 +1378,8 @@ async fn interrupt_preserves_unified_exec_processes() {
         cpu_percent: None,
         rss_kb: None,
     }]);
+    assert_eq!(chat.unified_exec_processes.len(), 1);
+    assert_eq!(chat.unified_exec_processes[0].key, "process-1");
     let cells = drain_insert_history(&mut rx);
     let combined = cells
         .iter()
@@ -1394,6 +1396,39 @@ async fn interrupt_preserves_unified_exec_processes() {
     );
 
     let _ = drain_insert_history(&mut rx);
+}
+
+#[tokio::test]
+async fn ps_authoritative_empty_list_clears_stale_footer_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    for index in 1..=4 {
+        begin_unified_exec_startup(
+            &mut chat,
+            &format!("call-{index}"),
+            &format!("process-{index}"),
+            &format!("sleep {index}"),
+        );
+    }
+    let before = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(before.contains("4 background terminals running"));
+
+    chat.add_ps_output(Vec::new());
+
+    assert!(chat.unified_exec_processes.is_empty());
+    let after = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(!after.contains("background terminal"));
+    let cells = drain_insert_history(&mut rx);
+    let ps_output = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(ps_output.contains("No background terminals running."));
+    assert_chatwidget_snapshot!(
+        "ps_authoritative_empty_list_clears_stale_footer",
+        format!("before:\n{before}\n\nafter:\n{after}\n\n/ps:\n{ps_output}")
+    );
 }
 
 #[tokio::test]
@@ -1450,6 +1485,13 @@ async fn turn_complete_keeps_unified_exec_processes() {
             rss_kb: None,
         },
     ]);
+    assert_eq!(
+        chat.unified_exec_processes
+            .iter()
+            .map(|process| process.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["process-1", "process-3"]
+    );
     let cells = drain_insert_history(&mut rx);
     let combined = cells
         .iter()
