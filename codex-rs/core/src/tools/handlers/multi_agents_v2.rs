@@ -14,6 +14,7 @@ use crate::tools::handlers::multi_agents_common::*;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_model_provider::ProviderCapabilities;
 use codex_protocol::AgentPath;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;
@@ -59,12 +60,15 @@ fn communication_from_tool_message(
     recipient: AgentPath,
     message: String,
     source: &crate::tools::context::ToolCallSource,
+    provider_capabilities: ProviderCapabilities,
     trigger_turn: bool,
 ) -> InterAgentCommunication {
-    if !matches!(
-        source,
-        crate::tools::context::ToolCallSource::DirectPlaintextMessage
-    ) {
+    if provider_capabilities.encrypted_collaboration_messages
+        && !matches!(
+            source,
+            crate::tools::context::ToolCallSource::DirectPlaintextMessage
+        )
+    {
         return InterAgentCommunication::new_encrypted(
             author,
             recipient,

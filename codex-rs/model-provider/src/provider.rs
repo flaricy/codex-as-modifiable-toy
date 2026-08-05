@@ -34,6 +34,8 @@ use crate::models_endpoint::OpenAiModelsEndpoint;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
     pub namespace_tools: bool,
+    /// Whether the provider can consume encrypted MultiAgentV2 message payloads.
+    pub encrypted_collaboration_messages: bool,
     pub image_generation: bool,
     pub web_search: bool,
 }
@@ -42,6 +44,7 @@ impl Default for ProviderCapabilities {
     fn default() -> Self {
         Self {
             namespace_tools: true,
+            encrypted_collaboration_messages: false,
             image_generation: true,
             web_search: true,
         }
@@ -273,6 +276,7 @@ impl ModelProvider for ConfiguredModelProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             namespace_tools: resolve_namespace_tools(&self.info),
+            encrypted_collaboration_messages: self.info.is_openai(),
             ..ProviderCapabilities::default()
         }
     }
@@ -520,7 +524,13 @@ mod tests {
             /*auth_manager*/ None,
         );
 
-        assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                encrypted_collaboration_messages: true,
+                ..ProviderCapabilities::default()
+            }
+        );
     }
 
     #[test]
@@ -531,6 +541,16 @@ mod tests {
         );
 
         assert!(!provider.capabilities().namespace_tools);
+        assert!(!provider.capabilities().encrypted_collaboration_messages);
+    }
+
+    #[test]
+    fn configured_non_openai_provider_with_openai_auth_disables_encrypted_collaboration() {
+        let mut info = provider_for("https://example.test/v1".to_string());
+        info.requires_openai_auth = true;
+        let provider = create_model_provider(info, /*auth_manager*/ None);
+
+        assert!(!provider.capabilities().encrypted_collaboration_messages);
     }
 
     #[test]

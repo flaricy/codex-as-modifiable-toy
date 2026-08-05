@@ -98,6 +98,7 @@ pub(crate) async fn handle_message_string_tool(
         receiver_agent_path.clone(),
         message,
         &source,
+        turn.provider.capabilities(),
         mode.trigger_turn(),
     );
     let kind = match mode {

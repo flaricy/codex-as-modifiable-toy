@@ -3108,7 +3108,21 @@ impl Session {
         mut communication: InterAgentCommunication,
     ) {
         communication.set_turn_id_if_missing(&turn_context.sub_id);
-        let response_item = communication.to_model_input_item();
+        // Actual OpenAI ciphertext cannot be converted client-side for a cross-provider child.
+        // Preserve that path instead of exposing ciphertext as a plaintext user message.
+        let response_item = if turn_context
+            .provider
+            .capabilities()
+            .encrypted_collaboration_messages
+            || communication.encrypted_content.is_some()
+        {
+            communication.to_model_input_item()
+        } else {
+            self.response_item_from_user_input(vec![UserInput::Text {
+                text: communication.content.clone(),
+                text_elements: Vec::new(),
+            }])
+        };
         let items = self.prepare_conversation_items_for_history(
             turn_context,
             std::slice::from_ref(&response_item),

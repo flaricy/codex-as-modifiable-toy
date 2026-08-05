@@ -123,6 +123,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             namespace_tools: self.info.namespace_tools.unwrap_or(true),
+            encrypted_collaboration_messages: false,
             image_generation: false,
             web_search: false,
         }
@@ -364,6 +365,7 @@ mod tests {
             provider.capabilities(),
             ProviderCapabilities {
                 namespace_tools: true,
+                encrypted_collaboration_messages: false,
                 image_generation: false,
                 web_search: false,
             }
