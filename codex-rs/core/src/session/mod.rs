@@ -3219,7 +3219,22 @@ impl Session {
         turn_context: &TurnContext,
         communication: InterAgentCommunication,
     ) {
-        let response_item = communication.to_model_input_item();
+        // OpenAI ciphertext cannot be converted client-side for a cross-provider child. Preserve
+        // actual ciphertext, but use ordinary user input for plaintext communications delivered
+        // to providers that do not support encrypted collaboration payloads.
+        let response_item = if turn_context
+            .provider
+            .capabilities()
+            .encrypted_collaboration_messages
+            || communication.encrypted_content.is_some()
+        {
+            communication.to_model_input_item()
+        } else {
+            self.response_item_from_user_input(vec![UserInput::Text {
+                text: communication.content.clone(),
+                text_elements: Vec::new(),
+            }])
+        };
         let (items, _) = self.prepare_conversation_items_for_history(
             turn_context,
             std::slice::from_ref(&response_item),

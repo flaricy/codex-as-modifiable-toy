@@ -46,6 +46,8 @@ pub enum RemoteCompactionSupport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
     pub namespace_tools: bool,
+    /// Whether the provider can consume encrypted MultiAgentV2 message payloads.
+    pub encrypted_collaboration_messages: bool,
     pub image_generation: bool,
     pub web_search: bool,
     pub external_web_access: bool,
@@ -56,6 +58,7 @@ impl Default for ProviderCapabilities {
     fn default() -> Self {
         Self {
             namespace_tools: true,
+            encrypted_collaboration_messages: false,
             image_generation: true,
             web_search: true,
             external_web_access: true,
@@ -307,6 +310,7 @@ impl ModelProvider for ConfiguredModelProvider {
 
         ProviderCapabilities {
             remote_compaction,
+            encrypted_collaboration_messages: self.info.is_openai(),
             ..ProviderCapabilities::default()
         }
     }
@@ -588,7 +592,13 @@ mod tests {
             /*auth_manager*/ None,
         );
 
-        assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                encrypted_collaboration_messages: true,
+                ..ProviderCapabilities::default()
+            }
+        );
     }
 
     #[test]
@@ -624,6 +634,16 @@ mod tests {
             let provider = create_model_provider(provider_info, /*auth_manager*/ None);
             assert_eq!(provider.capabilities().remote_compaction, expected);
         }
+    }
+
+    #[test]
+    fn configured_non_openai_provider_disables_encrypted_collaboration() {
+        let mut info = provider_for("https://example.test/v1".to_string());
+        // Authentication mode must not make a custom endpoint an OpenAI ciphertext consumer.
+        info.requires_openai_auth = true;
+        let provider = create_model_provider(info, /*auth_manager*/ None);
+
+        assert!(!provider.capabilities().encrypted_collaboration_messages);
     }
 
     #[test]
