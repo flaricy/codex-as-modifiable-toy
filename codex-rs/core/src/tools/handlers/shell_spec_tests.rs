@@ -20,14 +20,17 @@ fn exec_command_tool_matches_expected_spec() {
         exec_permission_approvals_enabled: false,
     });
 
+    let base_description = concat!(
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n",
+        "For finite long-running commands, keep the command in the shell foreground; do not use ",
+        "shell backgrounding such as `&`, `nohup ... &`, or `disown`. Set a short ",
+        "`yield_time_ms` with `on_exit: \"wake\"` so Codex can manage the yielded process as a ",
+        "user-visible background terminal, report completion, and handle lifecycle cleanup."
+    );
     let description = if cfg!(windows) {
-        format!(
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
-            windows_shell_guidance_description()
-        )
+        format!("{base_description}{}", windows_shell_guidance_description())
     } else {
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
-            .to_string()
+        base_description.to_string()
     };
     let yield_time_ms_description = if cfg!(windows) {
         "Maximum time to wait before returning a session ID for a still-running command. Commands that finish sooner return immediately. For ordinary commands, omit this parameter to use the 10000 ms default. Effective range on Windows is 10000-30000 ms."
