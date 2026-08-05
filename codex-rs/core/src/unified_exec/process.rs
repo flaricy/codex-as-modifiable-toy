@@ -221,6 +221,10 @@ impl UnifiedExecProcess {
                 });
             }
         }
+        // Fire-and-forget termination deliberately stops the exec-server event listener below,
+        // so it cannot rely on a later Exited event to update process state. Mark the process
+        // exited first so liveness consumers such as list_processes do not retain a dead entry.
+        self.signal_exit(self.exit_code());
         self.finish_termination();
     }
 

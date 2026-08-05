@@ -304,6 +304,58 @@ async fn blocking_terminate_unified_process(
     ))
 }
 
+#[tokio::test]
+async fn list_processes_excludes_exec_server_process_after_terminate() -> anyhow::Result<()> {
+    let (session, turn) = test_session_and_turn().await;
+    let manager = &session.services.unified_exec_manager;
+    let process_id = manager.allocate_process_id().await;
+    let (terminate_started_tx, mut terminate_started_rx) = watch::channel(false);
+    let allow_terminate = Arc::new(Notify::new());
+    let process = blocking_terminate_unified_process(
+        process_id,
+        terminate_started_tx,
+        Arc::clone(&allow_terminate),
+    )
+    .await?;
+    let call_id = "terminated-exec-server-process".to_string();
+    #[allow(deprecated)]
+    let cwd: codex_utils_path_uri::PathUri = turn.cwd.clone().into();
+
+    manager.process_store.lock().await.processes.insert(
+        process_id,
+        ProcessEntry {
+            process: Arc::clone(&process),
+            call_id: call_id.clone(),
+            process_id,
+            cwd: cwd.clone(),
+            initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            completion_wakeup: None,
+            hook_command: "sleep 300".to_string(),
+            tty: true,
+            network_approval: None,
+            session: Arc::downgrade(&session),
+            last_used: Instant::now(),
+        },
+    );
+    assert_eq!(
+        manager.list_processes().await,
+        vec![BackgroundTerminalInfo {
+            item_id: call_id,
+            process_id: process_id.to_string(),
+            command: "sleep 300".to_string(),
+            cwd,
+        }]
+    );
+
+    process.terminate();
+    tokio::time::timeout(Duration::from_secs(1), terminate_started_rx.changed()).await??;
+
+    assert!(process.has_exited());
+    assert!(manager.list_processes().await.is_empty());
+    allow_terminate.notify_waiters();
+    Ok(())
+}
+
 async fn write_stdin(
     session: &Arc<Session>,
     process_id: i32,
