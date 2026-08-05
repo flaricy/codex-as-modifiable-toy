@@ -97,6 +97,7 @@ use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
@@ -973,13 +974,18 @@ pub(crate) async fn apply_bespoke_event_handling(
         EventMsg::ItemStarted(event) => {
             let should_emit = match &event.item {
                 // Approval and guardian flows can emit the command start notification before core
-                // emits the canonical item. Reuse the same set to suppress that duplicate.
-                CoreTurnItem::CommandExecution(item) => thread_state
-                    .lock()
-                    .await
-                    .turn_summary
-                    .command_execution_started
-                    .insert(item.id.clone()),
+                // emits the canonical item. Usually that canonical item is a duplicate, but a
+                // unified-exec start upgrades the provisional approval item with its process ID
+                // and source, which clients need for background-terminal bookkeeping.
+                CoreTurnItem::CommandExecution(item) => {
+                    let mut state = thread_state.lock().await;
+                    note_command_execution_started(
+                        &mut state.turn_summary,
+                        &item.id,
+                        item.source == ExecCommandSource::UnifiedExecStartup
+                            && item.process_id.is_some(),
+                    )
+                }
                 _ => true,
             };
             let dynamic_tool_call_params = match &event.item {
@@ -1303,11 +1309,14 @@ async fn apply_canonical_item_completed_side_effects(
 ) {
     match item {
         CoreTurnItem::CommandExecution(item) => {
-            thread_state
-                .lock()
-                .await
+            let mut state = thread_state.lock().await;
+            state
                 .turn_summary
                 .command_execution_started
+                .remove(&item.id);
+            state
+                .turn_summary
+                .canonical_command_execution_started
                 .remove(&item.id);
         }
         CoreTurnItem::SubAgentActivity(activity)
@@ -1327,6 +1336,21 @@ async fn apply_canonical_item_completed_side_effects(
         }
         _ => {}
     }
+}
+
+fn note_command_execution_started(
+    turn_summary: &mut TurnSummary,
+    item_id: &str,
+    canonical_unified_exec_start: bool,
+) -> bool {
+    let first_start = turn_summary
+        .command_execution_started
+        .insert(item_id.to_string());
+    let first_canonical_start = canonical_unified_exec_start
+        && turn_summary
+            .canonical_command_execution_started
+            .insert(item_id.to_string());
+    first_start || first_canonical_start
 }
 
 async fn remove_missing_thread_watch(
@@ -1357,10 +1381,11 @@ async fn start_command_execution_item(
 ) -> bool {
     let first_start = {
         let mut state = thread_state.lock().await;
-        state
-            .turn_summary
-            .command_execution_started
-            .insert(item_id.clone())
+        note_command_execution_started(
+            &mut state.turn_summary,
+            &item_id,
+            /*canonical_unified_exec_start*/ false,
+        )
     };
     if first_start {
         let notification = ItemStartedNotification {
@@ -1401,12 +1426,17 @@ async fn complete_command_execution_item(
     outgoing: &ThreadScopedOutgoingMessageSender,
     thread_state: &Arc<Mutex<ThreadState>>,
 ) {
-    let should_emit = thread_state
-        .lock()
-        .await
-        .turn_summary
-        .command_execution_started
-        .remove(&item_id);
+    let should_emit = {
+        let mut state = thread_state.lock().await;
+        state
+            .turn_summary
+            .canonical_command_execution_started
+            .remove(&item_id);
+        state
+            .turn_summary
+            .command_execution_started
+            .remove(&item_id)
+    };
     if !should_emit {
         return;
     }
@@ -2599,6 +2629,27 @@ mod tests {
         assert!(!second_start);
         assert!(rx.try_recv().is_err(), "duplicate start should not emit");
         Ok(())
+    }
+
+    #[test]
+    fn canonical_unified_exec_start_upgrades_provisional_approval_start_once() {
+        let mut turn_summary = TurnSummary::default();
+
+        assert!(note_command_execution_started(
+            &mut turn_summary,
+            "cmd-1",
+            /*canonical_unified_exec_start*/ false,
+        ));
+        assert!(note_command_execution_started(
+            &mut turn_summary,
+            "cmd-1",
+            /*canonical_unified_exec_start*/ true,
+        ));
+        assert!(!note_command_execution_started(
+            &mut turn_summary,
+            "cmd-1",
+            /*canonical_unified_exec_start*/ true,
+        ));
     }
 
     #[tokio::test]

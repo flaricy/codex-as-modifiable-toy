@@ -276,14 +276,25 @@ impl ChatWidget {
         // Ensure the status indicator is visible while the command runs.
         self.bottom_pane.ensure_status_indicator();
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
-        self.running_commands.insert(
-            id.clone(),
-            RunningCommand {
-                command: command.clone(),
-                parsed_cmd: parsed_cmd.clone(),
-                source,
-            },
-        );
+        let already_running = self
+            .running_commands
+            .insert(
+                id.clone(),
+                RunningCommand {
+                    command: command.clone(),
+                    parsed_cmd: parsed_cmd.clone(),
+                    source,
+                },
+            )
+            .is_some();
+        if already_running {
+            // Approval flows may first publish a provisional Agent command item and later
+            // re-publish the canonical unified-exec item with its process ID. The outer handler
+            // has already used the canonical item to update the terminal footer; avoid rendering
+            // the same command twice in the active exec cell.
+            self.request_redraw();
+            return;
+        }
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
         let command_display = command.join(" ");
         let should_suppress_unified_wait = is_wait_interaction

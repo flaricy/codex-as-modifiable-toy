@@ -536,6 +536,47 @@ async fn exec_history_shows_unified_exec_startup_commands() {
 }
 
 #[tokio::test]
+async fn canonical_unified_exec_start_upgrades_approval_placeholder_for_footer() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.on_task_started();
+
+    let _approval_placeholder = begin_exec_with_source(
+        &mut chat,
+        "call-escalated",
+        "sleep 300",
+        ExecCommandSource::Agent,
+    );
+    assert!(chat.unified_exec_processes.is_empty());
+
+    let canonical = begin_unified_exec_startup(
+        &mut chat,
+        "call-escalated",
+        "process-escalated",
+        "sleep 300",
+    );
+
+    assert_eq!(chat.unified_exec_processes.len(), 1);
+    let active = chat
+        .transcript
+        .active_cell
+        .as_ref()
+        .and_then(|cell| cell.as_any().downcast_ref::<ExecCell>())
+        .expect("expected active exec cell");
+    assert_eq!(
+        active
+            .iter_calls()
+            .filter(|call| call.call_id == "call-escalated")
+            .count(),
+        1,
+        "canonical metadata refresh should not duplicate the command row"
+    );
+
+    end_exec(&mut chat, canonical, "", "", /*exit_code*/ 0);
+    assert!(chat.unified_exec_processes.is_empty());
+    let _ = drain_insert_history(&mut rx);
+}
+
+#[tokio::test]
 async fn exec_history_shows_unified_exec_tool_calls() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.on_task_started();
