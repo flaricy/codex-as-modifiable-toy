@@ -93,13 +93,17 @@ pub(crate) async fn handle_message_string_tool(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
+    // Root-agent mail should behave like ordinary queued mail while the root turn is active,
+    // but start a new turn when the root is idle. The session scheduler already provides that
+    // conditional behavior for communications marked with `trigger_turn`.
+    let trigger_turn = mode.trigger_turn() || receiver_agent_path.is_root();
     let communication = communication_from_tool_message(
         author,
         receiver_agent_path.clone(),
         message,
         &source,
         turn.provider.capabilities(),
-        mode.trigger_turn(),
+        trigger_turn,
     );
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
