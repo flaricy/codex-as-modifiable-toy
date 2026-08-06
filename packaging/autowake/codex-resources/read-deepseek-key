@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.our_codex}"
+KEY_FILE="$CODEX_HOME_DIR/secrets/deepseek_api_key"
+
+if [ ! -s "$KEY_FILE" ]; then
+  printf 'DeepSeek API key not found: %s\n' "$KEY_FILE" >&2
+  exit 1
+fi
+
+tr -d '\r\n' < "$KEY_FILE"
