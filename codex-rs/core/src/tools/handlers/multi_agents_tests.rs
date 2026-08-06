@@ -1293,7 +1293,7 @@ async fn multi_agent_v2_spawn_rejects_zero_fork_turns() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
+async fn multi_agent_v2_send_message_to_root_triggers_turn() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -1363,7 +1363,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                         && communication.other_recipients.is_empty()
                         && communication.content.is_empty()
                         && communication.encrypted_content.as_deref() == Some("encrypted-done")
-                        && !communication.trigger_turn
+                        && communication.trigger_turn
             )
     }));
 }
@@ -1882,7 +1882,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn() {
+async fn multi_agent_v2_completion_notifies_parent_on_every_turn_and_triggers_root() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = turn.config.as_ref().clone();
@@ -2009,7 +2009,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
                                 if communication.author == worker_path
                                     && communication.recipient == AgentPath::root()
                                     && communication.other_recipients.is_empty()
-                                    && !communication.trigger_turn =>
+                                    && communication.trigger_turn =>
                             {
                                 Some(communication.content)
                             }
@@ -2155,7 +2155,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
                         if communication.author.as_str() == "/root/worker"
                             && communication.recipient == AgentPath::root()
                             && communication.other_recipients.is_empty()
-                            && !communication.trigger_turn =>
+                            && communication.trigger_turn =>
                     {
                         Some(communication.content)
                     }

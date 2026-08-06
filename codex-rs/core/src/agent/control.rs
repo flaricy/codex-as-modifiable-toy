@@ -571,12 +571,13 @@ impl AgentControl {
                 ) else {
                     return;
                 };
+                let trigger_turn = parent_agent_path.is_root();
                 let communication = InterAgentCommunication::new(
                     child_agent_path,
                     parent_agent_path,
                     Vec::new(),
                     message,
-                    /*trigger_turn*/ false,
+                    trigger_turn,
                 );
                 let context =
                     AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
