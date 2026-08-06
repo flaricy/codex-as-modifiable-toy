@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.our_codex}"
+SECRETS_DIR="$CODEX_HOME_DIR/secrets"
+KEY_FILE="$SECRETS_DIR/deepseek_api_key"
+
+mkdir -p "$SECRETS_DIR"
+chmod 700 "$SECRETS_DIR"
+
+API_KEY=''
+if [ -t 0 ] && [ -r /dev/tty ]; then
+  printf 'DeepSeek API key: ' > /dev/tty
+  IFS= read -r -s API_KEY < /dev/tty || true
+  printf '\n' > /dev/tty
+else
+  IFS= read -r API_KEY || true
+fi
+
+if [ -z "$API_KEY" ]; then
+  printf 'DeepSeek API key cannot be empty.\n' >&2
+  exit 1
+fi
+
+umask 077
+TMP_KEY_FILE="$(mktemp "$SECRETS_DIR/.deepseek_api_key.XXXXXX")"
+printf '%s\n' "$API_KEY" > "$TMP_KEY_FILE"
+mv "$TMP_KEY_FILE" "$KEY_FILE"
+chmod 600 "$KEY_FILE"
+printf 'Saved DeepSeek API key to %s\n' "$KEY_FILE"
