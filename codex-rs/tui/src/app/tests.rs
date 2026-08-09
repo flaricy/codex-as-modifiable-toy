@@ -22,6 +22,7 @@ mod startup;
 mod thread_usage;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
+mod user_timer;
 
 use super::*;
 use crate::app_backtrack::BacktrackSelection;
@@ -4871,6 +4872,7 @@ async fn make_test_app() -> App {
         startup_protected_input_boundary: false,
         startup_pending_protected_request: false,
         rate_limit_hard_stop_generation: 0,
+        user_timer: UserTimerState::default(),
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
     }
@@ -4946,6 +4948,7 @@ async fn make_test_app_with_channels() -> (
             startup_protected_input_boundary: false,
             startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
+            user_timer: UserTimerState::default(),
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         },

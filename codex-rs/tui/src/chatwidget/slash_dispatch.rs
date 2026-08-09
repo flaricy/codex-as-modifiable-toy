@@ -309,6 +309,11 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Timer => {
+                self.app_event_tx.send(AppEvent::UserTimerCommand {
+                    args: String::new(),
+                });
+            }
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
@@ -891,6 +896,9 @@ impl ChatWidget {
                     self.clear_live_goal_submission();
                 }
             }
+            SlashCommand::Timer if !trimmed.is_empty() => {
+                self.app_event_tx.send(AppEvent::UserTimerCommand { args });
+            }
             SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
                     let command = cmd.command();
@@ -1101,6 +1109,7 @@ impl ChatWidget {
             | SlashCommand::Diff
             | SlashCommand::App
             | SlashCommand::Rename
+            | SlashCommand::Timer
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Feedback
             | SlashCommand::Export
