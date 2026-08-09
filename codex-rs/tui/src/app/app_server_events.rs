@@ -156,6 +156,10 @@ impl App {
 
         match server_notification_thread_target(&notification) {
             ServerNotificationThreadTarget::Thread(thread_id) => {
+                let should_drain_user_timer = self.primary_thread_id == Some(thread_id)
+                    && matches!(&notification, ServerNotification::TurnCompleted(_));
+                let closed_primary_thread = self.primary_thread_id == Some(thread_id)
+                    && matches!(&notification, ServerNotification::ThreadClosed(_));
                 let result = if self.primary_thread_id == Some(thread_id)
                     || self.primary_thread_id.is_none()
                 {
@@ -167,6 +171,12 @@ impl App {
 
                 if let Err(err) = result {
                     tracing::warn!("failed to enqueue app-server notification: {err}");
+                }
+                if closed_primary_thread {
+                    self.cancel_user_timer_for_thread(thread_id);
+                }
+                if should_drain_user_timer {
+                    self.app_event_tx.send(AppEvent::UserTimerDrain);
                 }
                 return;
             }

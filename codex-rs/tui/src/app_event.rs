@@ -229,6 +229,20 @@ pub(crate) enum AppEvent {
         branch: String,
     },
 
+    /// Apply a user-authored `/timer` command. This event is emitted only by the TUI composer;
+    /// no model-visible tool can create, replace, inspect, or stop a timer.
+    UserTimerCommand {
+        args: String,
+    },
+
+    /// Deliver one tick from the currently active user timer.
+    UserTimerTick {
+        generation: u64,
+    },
+
+    /// Retry delivery after the main thread transitions to idle.
+    UserTimerDrain,
+
     /// Fetch a persistent cross-session message history entry by offset.
     LookupMessageHistoryEntry {
         thread_id: ThreadId,

@@ -67,6 +67,7 @@ pub(super) async fn make_test_app() -> App {
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
         rate_limit_hard_stop_generation: 0,
+        user_timer: UserTimerState::default(),
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
     }
