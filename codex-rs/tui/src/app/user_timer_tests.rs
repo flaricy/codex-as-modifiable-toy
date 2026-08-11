@@ -12,6 +12,7 @@ fn parses_compact_spaced_and_bare_second_durations() {
     assert_eq!(
         parse_timer_command("30min check training"),
         Ok(TimerCommand::Start {
+            mode: TimerMode::Recurring,
             interval: Duration::from_secs(30 * 60),
             notification: "check training".to_string(),
         })
@@ -19,6 +20,7 @@ fn parses_compact_spaced_and_bare_second_durations() {
     assert_eq!(
         parse_timer_command("2 hours inspect logs"),
         Ok(TimerCommand::Start {
+            mode: TimerMode::Recurring,
             interval: Duration::from_secs(2 * 60 * 60),
             notification: "inspect logs".to_string(),
         })
@@ -26,8 +28,21 @@ fn parses_compact_spaced_and_bare_second_durations() {
     assert_eq!(
         parse_timer_command("45 inspect logs"),
         Ok(TimerCommand::Start {
+            mode: TimerMode::Recurring,
             interval: Duration::from_secs(45),
             notification: "inspect logs".to_string(),
+        })
+    );
+}
+
+#[test]
+fn parses_one_time_timer() {
+    assert_eq!(
+        parse_timer_command("once 30min check training"),
+        Ok(TimerCommand::Start {
+            mode: TimerMode::Once,
+            interval: Duration::from_secs(30 * 60),
+            notification: "check training".to_string(),
         })
     );
 }
@@ -37,6 +52,8 @@ fn rejects_invalid_or_incomplete_commands() {
     assert!(parse_timer_command("0s wake").is_err());
     assert!(parse_timer_command("1week wake").is_err());
     assert!(parse_timer_command("30min").is_err());
+    assert!(parse_timer_command("once").is_err());
+    assert!(parse_timer_command("once 30min").is_err());
     assert!(parse_timer_command("stop now").is_err());
 }
 
@@ -48,6 +65,7 @@ async fn stale_ticks_are_ignored_and_queue_is_bounded() {
     state.active = Some(ActiveUserTimer {
         generation,
         thread_id: ThreadId::new(),
+        mode: TimerMode::Recurring,
         interval: Duration::from_secs(1),
         notification: "wake".to_string(),
         task,
