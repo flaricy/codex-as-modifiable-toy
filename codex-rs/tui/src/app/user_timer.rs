@@ -1,4 +1,4 @@
-//! User-owned recurring notifications for the primary thread.
+//! User-owned scheduled notifications for the primary thread.
 //!
 //! This stays in the TUI rather than the model tool surface. Only a slash command parsed from the
 //! user composer can mutate it. Timer ticks are kept in a dedicated queue and use `turn/start`
@@ -18,13 +18,20 @@ use super::*;
 
 const MAX_PENDING_NOTIFICATIONS: usize = 64;
 const MAX_NOTIFICATION_CHARS: usize = 4_000;
-const TIMER_USAGE: &str = "Usage: /timer <duration> <notification> | /timer status | /timer stop";
+const TIMER_USAGE: &str = "Usage: /timer <duration> <notification> | /timer once <duration> <notification> | /timer status | /timer stop";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimerMode {
+    Recurring,
+    Once,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum TimerCommand {
     Status,
     Stop,
     Start {
+        mode: TimerMode,
         interval: Duration,
         notification: String,
     },
@@ -33,6 +40,7 @@ enum TimerCommand {
 struct ActiveUserTimer {
     generation: u64,
     thread_id: ThreadId,
+    mode: TimerMode,
     interval: Duration,
     notification: String,
     task: JoinHandle<()>,
@@ -143,6 +151,7 @@ impl App {
                 );
             }
             TimerCommand::Start {
+                mode,
                 interval,
                 notification,
             } => {
@@ -162,24 +171,39 @@ impl App {
                 self.user_timer.stop();
                 let generation = self.user_timer.next_generation();
                 let app_event_tx = self.app_event_tx.clone();
-                let task = tokio::spawn(async move {
-                    let start = Instant::now() + interval;
-                    let mut ticker = tokio::time::interval_at(start, interval);
-                    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-                    loop {
-                        ticker.tick().await;
+                let task = match mode {
+                    TimerMode::Once => tokio::spawn(async move {
+                        tokio::time::sleep(interval).await;
                         app_event_tx.send(AppEvent::UserTimerTick { generation });
-                    }
-                });
+                    }),
+                    TimerMode::Recurring => tokio::spawn(async move {
+                        let start = Instant::now() + interval;
+                        let mut ticker = tokio::time::interval_at(start, interval);
+                        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                        loop {
+                            ticker.tick().await;
+                            app_event_tx.send(AppEvent::UserTimerTick { generation });
+                        }
+                    }),
+                };
                 self.user_timer.active = Some(ActiveUserTimer {
                     generation,
                     thread_id,
+                    mode,
                     interval,
                     notification: notification.clone(),
                     task,
                 });
+                let title = match mode {
+                    TimerMode::Recurring => {
+                        format!("Timer set for every {}.", display_duration(interval))
+                    }
+                    TimerMode::Once => {
+                        format!("One-time timer set for {}.", display_duration(interval))
+                    }
+                };
                 self.chat_widget.add_info_message(
-                    format!("Timer set for every {}.", display_duration(interval)),
+                    title,
                     Some(format!(
                         "Main agent notification: {notification}\nUse /timer status or /timer stop."
                     )),
@@ -198,11 +222,13 @@ impl App {
         };
         let queued = self.user_timer.pending.len();
         let dropped = self.user_timer.dropped;
+        let schedule = match timer.mode {
+            TimerMode::Recurring => format!("Every {}", display_duration(timer.interval)),
+            TimerMode::Once => format!("Once after {}", display_duration(timer.interval)),
+        };
         let mut hint = format!(
-            "Every {} on main thread {}: {}\nQueued: {queued}; dropped after queue limit: {dropped}.",
-            display_duration(timer.interval),
-            timer.thread_id,
-            timer.notification
+            "{schedule} on main thread {}: {}\nQueued: {queued}; dropped after queue limit: {dropped}.",
+            timer.thread_id, timer.notification
         );
         if let Some(error) = &self.user_timer.last_delivery_error {
             hint.push_str(&format!("\nLast delivery error: {error}"));
@@ -244,16 +270,18 @@ impl App {
         let Some(pending) = self.user_timer.pending.front().cloned() else {
             return;
         };
-        let Some(timer) = self
+        let (thread_id, mode) = match self
             .user_timer
             .active
             .as_ref()
             .filter(|timer| timer.generation == pending.generation)
-        else {
-            self.user_timer.pending.pop_front();
-            return;
+        {
+            Some(timer) => (timer.thread_id, timer.mode),
+            None => {
+                self.user_timer.pending.pop_front();
+                return;
+            }
         };
-        let thread_id = timer.thread_id;
         if self.primary_thread_id != Some(thread_id) {
             self.user_timer.stop();
             return;
@@ -323,6 +351,16 @@ impl App {
             Ok(response) => {
                 self.user_timer.pending.pop_front();
                 self.user_timer.last_delivery_error = None;
+                if mode == TimerMode::Once
+                    && self
+                        .user_timer
+                        .active
+                        .as_ref()
+                        .is_some_and(|timer| timer.generation == pending.generation)
+                {
+                    self.user_timer.active.take();
+                    self.user_timer.next_generation();
+                }
                 let turn_id = response.turn.id;
                 let store = Arc::clone(&self.ensure_thread_channel(thread_id).store);
                 store.lock().await.active_turn_id = Some(turn_id.clone());
@@ -355,8 +393,12 @@ fn parse_timer_command(args: &str) -> Result<TimerCommand, String> {
         _ => {}
     }
 
-    let (interval, consumed) = parse_duration_prefix(&words)?;
-    let notification = words[consumed..].join(" ");
+    let (mode, duration_start) = match words.first() {
+        Some(command) if command.eq_ignore_ascii_case("once") => (TimerMode::Once, 1),
+        _ => (TimerMode::Recurring, 0),
+    };
+    let (interval, consumed) = parse_duration_prefix(&words[duration_start..])?;
+    let notification = words[duration_start + consumed..].join(" ");
     if notification.is_empty() {
         return Err("A notification message is required.".to_string());
     }
@@ -366,6 +408,7 @@ fn parse_timer_command(args: &str) -> Result<TimerCommand, String> {
         ));
     }
     Ok(TimerCommand::Start {
+        mode,
         interval,
         notification,
     })
