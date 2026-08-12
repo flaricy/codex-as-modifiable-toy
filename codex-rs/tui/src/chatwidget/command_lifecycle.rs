@@ -8,6 +8,17 @@ use codex_app_server_protocol::ThreadBackgroundTerminal;
 
 impl ChatWidget {
     pub(crate) fn add_ps_output(&mut self, terminals: Vec<ThreadBackgroundTerminal>) {
+        let processes = self.reconcile_background_terminals(terminals);
+        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+    }
+
+    /// Reconcile the event-derived footer cache with the core process manager without rendering
+    /// a `/ps` history cell. Thread switching uses this after replay so historical process-start
+    /// events cannot resurrect terminals that have already exited.
+    pub(crate) fn reconcile_background_terminals(
+        &mut self,
+        terminals: Vec<ThreadBackgroundTerminal>,
+    ) -> Vec<history_cell::UnifiedExecProcessDetails> {
         let (authoritative_processes, processes) = terminals
             .into_iter()
             .map(|terminal| {
@@ -38,7 +49,7 @@ impl ChatWidget {
         // background-terminal count in the footer.
         self.unified_exec_processes = authoritative_processes;
         self.sync_unified_exec_footer();
-        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+        processes
     }
 
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {

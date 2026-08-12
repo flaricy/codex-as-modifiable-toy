@@ -1432,6 +1432,32 @@ async fn ps_authoritative_empty_list_clears_stale_footer_snapshot() {
 }
 
 #[tokio::test]
+async fn silent_terminal_reconcile_clears_replayed_footer_without_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    for index in 1..=2 {
+        begin_unified_exec_startup(
+            &mut chat,
+            &format!("call-{index}"),
+            &format!("process-{index}"),
+            &format!("sleep {index}"),
+        );
+    }
+    assert!(render_bottom_popup(&chat, /*width*/ 100).contains("2 background terminals running"));
+    let _ = drain_insert_history(&mut rx);
+
+    let details = chat.reconcile_background_terminals(Vec::new());
+
+    assert!(details.is_empty());
+    assert!(chat.unified_exec_processes.is_empty());
+    assert!(!render_bottom_popup(&chat, /*width*/ 100).contains("background terminal"));
+    assert!(
+        drain_insert_history(&mut rx).is_empty(),
+        "thread-switch reconciliation must not add a /ps history cell"
+    );
+}
+
+#[tokio::test]
 async fn interrupt_preserves_unified_exec_wait_streak_snapshot() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

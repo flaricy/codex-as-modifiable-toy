@@ -547,6 +547,26 @@ impl App {
             self.chat_widget.add_info_message(message, /*hint*/ None);
         }
         self.drain_active_thread_events(tui).await?;
+        match app_server.thread_background_terminals_list(thread_id).await {
+            Ok(terminals) => {
+                self.chat_widget.reconcile_background_terminals(terminals);
+            }
+            Err(err) if is_replay_only => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    %err,
+                    "failed to reconcile closed agent background terminals; clearing replay cache"
+                );
+                self.chat_widget.reconcile_background_terminals(Vec::new());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    %err,
+                    "failed to reconcile agent background terminal footer"
+                );
+            }
+        }
         self.refresh_pending_thread_approvals().await;
 
         Ok(())
