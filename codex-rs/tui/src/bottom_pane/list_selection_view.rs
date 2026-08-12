@@ -123,6 +123,11 @@ pub(crate) type OnSelectionChangedCallback =
 /// Ctrl+C).  Used by the theme picker to restore the pre-open theme.
 pub(crate) type OnCancelCallback = Option<Box<dyn Fn(&AppEventSender) + Send + Sync>>;
 
+/// Optional picker-specific key handler. Returning `true` accepts and dismisses the picker.
+/// The selected index is the actual index into the unfiltered `items` list.
+pub(crate) type OnKeyCallback =
+    Option<Box<dyn Fn(&KeyEvent, Option<usize>, &AppEventSender) -> bool + Send + Sync>>;
+
 /// One row in a [`ListSelectionView`] selection list.
 ///
 /// This is the source-of-truth model for row state before filtering and
@@ -211,6 +216,9 @@ pub(crate) struct SelectionViewParams {
 
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     pub on_cancel: OnCancelCallback,
+
+    /// Called before the generic keymap handles an input event.
+    pub on_key: OnKeyCallback,
 }
 
 impl Default for SelectionViewParams {
@@ -241,6 +249,7 @@ impl Default for SelectionViewParams {
             on_selection_changed: None,
             allow_cancel: true,
             on_cancel: None,
+            on_key: None,
         }
     }
 }
@@ -286,6 +295,8 @@ pub(crate) struct ListSelectionView {
 
     /// Called when the picker is dismissed via Esc/Ctrl+C without selecting.
     on_cancel: OnCancelCallback,
+
+    on_key: OnKeyCallback,
     keymap: ListKeymap,
 }
 
@@ -416,6 +427,7 @@ impl ListSelectionView {
             on_selection_changed: params.on_selection_changed,
             allow_cancel: params.allow_cancel,
             on_cancel: params.on_cancel,
+            on_key: params.on_key,
             keymap,
         };
         s.apply_filter();
@@ -955,6 +967,13 @@ impl BottomPaneView for ListSelectionView {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
+        if let Some(on_key) = &self.on_key
+            && on_key(&key_event, self.selected_actual_idx(), &self.app_event_tx)
+        {
+            self.completion = Some(ViewCompletion::Accepted);
+            return;
+        }
+
         // Searchable lists reserve printable characters for query input. This
         // keeps vim-style plain j/k/h/l useful in non-search lists without
         // making those letters impossible to type into a filter.

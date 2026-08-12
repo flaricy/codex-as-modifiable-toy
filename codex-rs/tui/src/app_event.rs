@@ -276,13 +276,26 @@ pub(crate) enum AppEvent {
         timer_id: u64,
     },
 
+    /// Open the edit/stop actions for one timer selected by the user.
+    OpenUserTimerActions {
+        timer_id: u64,
+    },
+
+    /// Open the notification editor for one timer selected by the user.
+    EditUserTimerNotification {
+        timer_id: u64,
+    },
+
+    /// Apply notification text submitted from the user-only timer editor.
+    UpdateUserTimerNotification {
+        timer_id: u64,
+        notification: String,
+    },
+
     /// Deliver one tick from an active user timer.
     UserTimerTick {
         timer_id: u64,
     },
-
-    /// Retry delivery after the main thread transitions to idle.
-    UserTimerDrain,
 
     /// Fetch a persistent cross-session message history entry by offset.
     LookupMessageHistoryEntry {

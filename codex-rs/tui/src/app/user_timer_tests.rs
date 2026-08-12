@@ -58,32 +58,27 @@ fn rejects_invalid_or_incomplete_commands() {
 }
 
 #[tokio::test]
-async fn stale_ticks_are_ignored_and_queue_is_bounded() {
+async fn delivery_counts_are_tracked_per_timer() {
     let mut state = UserTimerState::default();
     let timer_id = state.next_timer_id();
-    let task = tokio::spawn(std::future::pending::<()>());
     state.active.push(ActiveUserTimer {
         timer_id,
         thread_id: ThreadId::new(),
         mode: TimerMode::Recurring,
         interval: Duration::from_secs(1),
         notification: "wake".to_string(),
-        dropped: 0,
-        last_delivery_error: None,
-        task,
+        delivered: 3,
+        skipped: 2,
+        last_delivery_error: Some("not steerable".to_string()),
+        task: tokio::spawn(std::future::pending::<()>()),
     });
 
-    assert!(!state.enqueue_tick(timer_id.wrapping_add(1)));
-    for _ in 0..MAX_PENDING_NOTIFICATIONS {
-        assert!(state.enqueue_tick(timer_id));
-    }
-    assert!(!state.enqueue_tick(timer_id));
-    assert_eq!(state.pending.len(), MAX_PENDING_NOTIFICATIONS);
-    assert_eq!(state.active[0].dropped, 1);
+    assert_eq!(state.delivery_counts(timer_id), Some((3, 2)));
+    assert_eq!(state.delivery_counts(timer_id.wrapping_add(1)), None);
 }
 
 #[tokio::test]
-async fn stopping_one_timer_keeps_other_timers_and_their_notifications() {
+async fn stopping_one_timer_keeps_other_timers_and_their_delivery_status() {
     let mut state = UserTimerState::default();
     let first_timer_id = state.next_timer_id();
     state.active.push(ActiveUserTimer {
@@ -92,7 +87,8 @@ async fn stopping_one_timer_keeps_other_timers_and_their_notifications() {
         mode: TimerMode::Recurring,
         interval: Duration::from_secs(1),
         notification: "first".to_string(),
-        dropped: 0,
+        delivered: 1,
+        skipped: 0,
         last_delivery_error: None,
         task: tokio::spawn(std::future::pending::<()>()),
     });
@@ -103,21 +99,15 @@ async fn stopping_one_timer_keeps_other_timers_and_their_notifications() {
         mode: TimerMode::Once,
         interval: Duration::from_secs(2),
         notification: "second".to_string(),
-        dropped: 0,
-        last_delivery_error: None,
+        delivered: 4,
+        skipped: 2,
+        last_delivery_error: Some("busy".to_string()),
         task: tokio::spawn(std::future::pending::<()>()),
     });
-    assert!(state.enqueue_tick(first_timer_id));
-    assert!(state.enqueue_tick(second_timer_id));
 
     assert!(state.stop_timer(first_timer_id));
 
     assert_eq!(state.active_timer_ids(), vec![second_timer_id]);
-    assert_eq!(
-        state.pending,
-        VecDeque::from([PendingNotification {
-            timer_id: second_timer_id,
-            text: "second".to_string(),
-        }])
-    );
+    assert_eq!(state.delivery_counts(second_timer_id), Some((4, 2)));
+    assert_eq!(state.active[0].last_delivery_error.as_deref(), Some("busy"));
 }

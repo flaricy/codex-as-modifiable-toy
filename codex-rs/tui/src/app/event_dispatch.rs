@@ -611,12 +611,20 @@ impl App {
             AppEvent::CancelUserTimer { timer_id } => {
                 self.cancel_user_timer(timer_id);
             }
+            AppEvent::OpenUserTimerActions { timer_id } => {
+                self.show_user_timer_actions(timer_id);
+            }
+            AppEvent::EditUserTimerNotification { timer_id } => {
+                self.edit_user_timer_notification(timer_id);
+            }
+            AppEvent::UpdateUserTimerNotification {
+                timer_id,
+                notification,
+            } => {
+                self.update_user_timer_notification(timer_id, notification);
+            }
             AppEvent::UserTimerTick { timer_id } => {
                 self.handle_user_timer_tick(app_server, timer_id).await;
-            }
-            AppEvent::UserTimerDrain => {
-                self.maybe_start_next_user_timer_notification(app_server)
-                    .await;
             }
             AppEvent::CodexOp(op) => {
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
