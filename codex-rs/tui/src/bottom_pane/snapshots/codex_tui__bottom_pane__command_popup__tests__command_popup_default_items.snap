@@ -23,7 +23,7 @@ expression: commands
 /app - continue this session in the Desktop app
 /init - create an AGENTS.md file with instructions for Codex
 /compact - summarize conversation to prevent hitting the context limit
-/timer - schedule a notification to the main agent
+/timer - schedule or manage notifications to the main agent
 /agent - switch the active agent thread
 /side - start a side conversation in an ephemeral fork
 /copy - copy last response as markdown

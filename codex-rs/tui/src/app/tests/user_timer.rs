@@ -20,11 +20,11 @@ async fn timer_start_has_a_clear_user_visible_status() {
         .expect("timer start should add a status cell");
     let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
     assert_snapshot!(rendered, @r"
-    • Timer set for every 30min. Main agent notification: check training progress
-    Use /timer status or /timer stop.
+    • Timer #1 set for every 30min. Main agent notification: check training progress
+    Use /timer to manage timers or /timer stop to stop all.
     ");
 
-    assert!(app.user_timer.stop());
+    std::assert_eq!(app.user_timer.stop_all(), 1);
 }
 
 #[tokio::test]
@@ -46,11 +46,52 @@ async fn one_time_timer_start_has_a_clear_user_visible_status() {
         .expect("timer start should add a status cell");
     let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
     assert_snapshot!(rendered, @r"
-    • One-time timer set for 30min. Main agent notification: check training progress
-    Use /timer status or /timer stop.
+    • One-time timer #1 set for 30min. Main agent notification: check training progress
+    Use /timer to manage timers or /timer stop to stop all.
     ");
 
-    assert!(app.user_timer.stop());
+    std::assert_eq!(app.user_timer.stop_all(), 1);
+}
+
+#[tokio::test]
+async fn timer_picker_lists_all_timers_and_selecting_one_cancels_only_that_timer() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    app.primary_thread_id = Some(thread_id);
+    app.primary_session_configured =
+        Some(test_thread_session(thread_id, app.config.cwd.to_path_buf()));
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_user_timer_command("30min check training progress".to_string());
+    app.handle_user_timer_command("once 2h inspect logs".to_string());
+    std::assert_eq!(app.user_timer.active_timer_ids(), vec![1, 2]);
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_user_timer_command(String::new());
+
+    let popup = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert_snapshot!(popup, @r"
+      Manage Timers
+      2 active. Select a timer to cancel it.
+
+    › 1. Timer #1 · Every 30min    check training progress
+      2. Timer #2 · Once after 2h  inspect logs
+
+      Press enter to confirm or esc to go back
+    ");
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let timer_id = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::CancelUserTimer { timer_id } => Some(timer_id),
+            _ => None,
+        })
+        .expect("selecting a timer should request cancellation");
+    app.cancel_user_timer(timer_id);
+
+    std::assert_eq!(app.user_timer.active_timer_ids(), vec![2]);
+    std::assert_eq!(app.user_timer.stop_all(), 1);
 }
 
 #[tokio::test]
@@ -71,11 +112,13 @@ async fn busy_main_thread_keeps_notification_queued_then_idle_starts_new_turn() 
     app.clear_active_thread().await;
 
     app.handle_user_timer_command("1d inspect training".to_string());
-    let generation = app
+    let timer_id = app
         .user_timer
-        .active_generation()
+        .active_timer_ids()
+        .into_iter()
+        .next()
         .expect("timer should be active");
-    assert!(app.user_timer.enqueue_tick(generation));
+    assert!(app.user_timer.enqueue_tick(timer_id));
     let store = Arc::clone(&app.thread_event_channels[&thread_id].store);
     store.lock().await.active_turn_id = Some("busy-turn".to_string());
 
@@ -104,7 +147,7 @@ async fn busy_main_thread_keeps_notification_queued_then_idle_starts_new_turn() 
     std::assert_eq!(app.user_timer.pending_len(), 0);
     assert!(store.lock().await.active_turn_id.is_some());
 
-    app.user_timer.stop();
+    app.user_timer.stop_all();
     app_server.shutdown().await?;
     Ok(())
 }
@@ -127,17 +170,19 @@ async fn one_time_timer_becomes_inactive_after_starting_notification_turn() -> R
     app.clear_active_thread().await;
 
     app.handle_user_timer_command("once 1d inspect training".to_string());
-    let generation = app
+    let timer_id = app
         .user_timer
-        .active_generation()
+        .active_timer_ids()
+        .into_iter()
+        .next()
         .expect("timer should be active");
-    assert!(app.user_timer.enqueue_tick(generation));
+    assert!(app.user_timer.enqueue_tick(timer_id));
 
     app.maybe_start_next_user_timer_notification(&mut app_server)
         .await;
 
     std::assert_eq!(app.user_timer.pending_len(), 0);
-    std::assert_eq!(app.user_timer.active_generation(), None);
+    assert!(app.user_timer.active_timer_ids().is_empty());
     assert!(
         app.thread_event_channels[&thread_id]
             .store

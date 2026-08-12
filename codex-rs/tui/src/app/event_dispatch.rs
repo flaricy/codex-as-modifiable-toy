@@ -608,8 +608,11 @@ impl App {
             AppEvent::UserTimerCommand { args } => {
                 self.handle_user_timer_command(args);
             }
-            AppEvent::UserTimerTick { generation } => {
-                self.handle_user_timer_tick(app_server, generation).await;
+            AppEvent::CancelUserTimer { timer_id } => {
+                self.cancel_user_timer(timer_id);
+            }
+            AppEvent::UserTimerTick { timer_id } => {
+                self.handle_user_timer_tick(app_server, timer_id).await;
             }
             AppEvent::UserTimerDrain => {
                 self.maybe_start_next_user_timer_notification(app_server)
