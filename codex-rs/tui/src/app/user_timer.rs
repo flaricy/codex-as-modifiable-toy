@@ -16,9 +16,10 @@ use tokio::time::MissedTickBehavior;
 
 use super::*;
 
+const MAX_ACTIVE_TIMERS: usize = 64;
 const MAX_PENDING_NOTIFICATIONS: usize = 64;
 const MAX_NOTIFICATION_CHARS: usize = 4_000;
-const TIMER_USAGE: &str = "Usage: /timer <duration> <notification> | /timer once <duration> <notification> | /timer status | /timer stop";
+const TIMER_USAGE: &str = "Usage: /timer <duration> <notification> | /timer once <duration> <notification> | /timer [status] | /timer stop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerMode {
@@ -38,11 +39,13 @@ enum TimerCommand {
 }
 
 struct ActiveUserTimer {
-    generation: u64,
+    timer_id: u64,
     thread_id: ThreadId,
     mode: TimerMode,
     interval: Duration,
     notification: String,
+    dropped: u64,
+    last_delivery_error: Option<String>,
     task: JoinHandle<()>,
 }
 
@@ -54,66 +57,80 @@ impl Drop for ActiveUserTimer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingNotification {
-    generation: u64,
+    timer_id: u64,
     text: String,
 }
 
 #[derive(Default)]
 pub(super) struct UserTimerState {
-    generation: u64,
-    active: Option<ActiveUserTimer>,
+    next_timer_id: u64,
+    active: Vec<ActiveUserTimer>,
     pending: VecDeque<PendingNotification>,
-    dropped: u64,
-    last_delivery_error: Option<String>,
 }
 
 impl UserTimerState {
-    fn next_generation(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.generation
-    }
-
-    pub(super) fn stop(&mut self) -> bool {
-        let was_active = self.active.take().is_some();
-        self.next_generation();
-        self.pending.clear();
-        self.dropped = 0;
-        self.last_delivery_error = None;
-        was_active
-    }
-
-    fn cancel_if_target_changed(&mut self, thread_id: ThreadId) {
-        if self
-            .active
-            .as_ref()
-            .is_some_and(|timer| timer.thread_id != thread_id)
-        {
-            self.stop();
+    fn next_timer_id(&mut self) -> u64 {
+        loop {
+            self.next_timer_id = self.next_timer_id.wrapping_add(1);
+            if self.next_timer_id != 0
+                && !self
+                    .active
+                    .iter()
+                    .any(|timer| timer.timer_id == self.next_timer_id)
+            {
+                return self.next_timer_id;
+            }
         }
     }
 
-    pub(super) fn enqueue_tick(&mut self, generation: u64) -> bool {
+    pub(super) fn stop_all(&mut self) -> usize {
+        let stopped = self.active.len();
+        self.active.clear();
+        self.pending.clear();
+        stopped
+    }
+
+    fn stop_timer(&mut self, timer_id: u64) -> bool {
+        let Some(index) = self
+            .active
+            .iter()
+            .position(|timer| timer.timer_id == timer_id)
+        else {
+            return false;
+        };
+        self.active.remove(index);
+        self.pending.retain(|pending| pending.timer_id != timer_id);
+        true
+    }
+
+    fn cancel_if_target_changed(&mut self, thread_id: ThreadId) {
+        if self.active.iter().any(|timer| timer.thread_id != thread_id) {
+            self.stop_all();
+        }
+    }
+
+    pub(super) fn enqueue_tick(&mut self, timer_id: u64) -> bool {
         let Some(timer) = self
             .active
-            .as_ref()
-            .filter(|timer| timer.generation == generation)
+            .iter_mut()
+            .find(|timer| timer.timer_id == timer_id)
         else {
             return false;
         };
         if self.pending.len() >= MAX_PENDING_NOTIFICATIONS {
-            self.dropped = self.dropped.saturating_add(1);
+            timer.dropped = timer.dropped.saturating_add(1);
             return false;
         }
         self.pending.push_back(PendingNotification {
-            generation,
+            timer_id,
             text: timer.notification.clone(),
         });
         true
     }
 
     #[cfg(test)]
-    pub(super) fn active_generation(&self) -> Option<u64> {
-        self.active.as_ref().map(|timer| timer.generation)
+    pub(super) fn active_timer_ids(&self) -> Vec<u64> {
+        self.active.iter().map(|timer| timer.timer_id).collect()
     }
 
     #[cfg(test)]
@@ -134,16 +151,16 @@ impl App {
         };
 
         match command {
-            TimerCommand::Status => self.show_user_timer_status(),
+            TimerCommand::Status => self.show_user_timer_picker(),
             TimerCommand::Stop => {
-                let was_active = self.user_timer.stop();
-                let title = if was_active {
-                    "Timer stopped."
-                } else {
-                    "No timer is active."
+                let stopped = self.user_timer.stop_all();
+                let title = match stopped {
+                    0 => "No timers are active.".to_string(),
+                    1 => "Timer stopped.".to_string(),
+                    _ => format!("{stopped} timers stopped."),
                 };
                 self.chat_widget.add_info_message(
-                    title.to_string(),
+                    title,
                     Some(
                         "Any timer notification turn already running is not interrupted."
                             .to_string(),
@@ -168,13 +185,19 @@ impl App {
                     return;
                 }
 
-                self.user_timer.stop();
-                let generation = self.user_timer.next_generation();
+                if self.user_timer.active.len() >= MAX_ACTIVE_TIMERS {
+                    self.chat_widget.add_error_message(format!(
+                        "Cannot start more than {MAX_ACTIVE_TIMERS} timers. Cancel one with /timer and try again."
+                    ));
+                    return;
+                }
+
+                let timer_id = self.user_timer.next_timer_id();
                 let app_event_tx = self.app_event_tx.clone();
                 let task = match mode {
                     TimerMode::Once => tokio::spawn(async move {
                         tokio::time::sleep(interval).await;
-                        app_event_tx.send(AppEvent::UserTimerTick { generation });
+                        app_event_tx.send(AppEvent::UserTimerTick { timer_id });
                     }),
                     TimerMode::Recurring => tokio::spawn(async move {
                         let start = Instant::now() + interval;
@@ -182,59 +205,116 @@ impl App {
                         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
                         loop {
                             ticker.tick().await;
-                            app_event_tx.send(AppEvent::UserTimerTick { generation });
+                            app_event_tx.send(AppEvent::UserTimerTick { timer_id });
                         }
                     }),
                 };
-                self.user_timer.active = Some(ActiveUserTimer {
-                    generation,
+                self.user_timer.active.push(ActiveUserTimer {
+                    timer_id,
                     thread_id,
                     mode,
                     interval,
                     notification: notification.clone(),
+                    dropped: 0,
+                    last_delivery_error: None,
                     task,
                 });
                 let title = match mode {
                     TimerMode::Recurring => {
-                        format!("Timer set for every {}.", display_duration(interval))
+                        format!(
+                            "Timer #{timer_id} set for every {}.",
+                            display_duration(interval)
+                        )
                     }
                     TimerMode::Once => {
-                        format!("One-time timer set for {}.", display_duration(interval))
+                        format!(
+                            "One-time timer #{timer_id} set for {}.",
+                            display_duration(interval)
+                        )
                     }
                 };
                 self.chat_widget.add_info_message(
                     title,
                     Some(format!(
-                        "Main agent notification: {notification}\nUse /timer status or /timer stop."
+                        "Main agent notification: {notification}\nUse /timer to manage timers or /timer stop to stop all."
                     )),
                 );
             }
         }
     }
 
-    fn show_user_timer_status(&mut self) {
-        let Some(timer) = self.user_timer.active.as_ref() else {
+    fn show_user_timer_picker(&mut self) {
+        if self.user_timer.active.is_empty() {
             self.chat_widget.add_info_message(
-                "No timer is active.".to_string(),
+                "No timers are active.".to_string(),
                 Some(TIMER_USAGE.to_string()),
             );
             return;
-        };
-        let queued = self.user_timer.pending.len();
-        let dropped = self.user_timer.dropped;
-        let schedule = match timer.mode {
-            TimerMode::Recurring => format!("Every {}", display_duration(timer.interval)),
-            TimerMode::Once => format!("Once after {}", display_duration(timer.interval)),
-        };
-        let mut hint = format!(
-            "{schedule} on main thread {}: {}\nQueued: {queued}; dropped after queue limit: {dropped}.",
-            timer.thread_id, timer.notification
-        );
-        if let Some(error) = &self.user_timer.last_delivery_error {
-            hint.push_str(&format!("\nLast delivery error: {error}"));
         }
-        self.chat_widget
-            .add_info_message("Timer active.".to_string(), Some(hint));
+
+        let items = self
+            .user_timer
+            .active
+            .iter()
+            .map(|timer| {
+                let timer_id = timer.timer_id;
+                let schedule = match timer.mode {
+                    TimerMode::Recurring => {
+                        format!("Every {}", display_duration(timer.interval))
+                    }
+                    TimerMode::Once => {
+                        format!("Once after {}", display_duration(timer.interval))
+                    }
+                };
+                let queued = self
+                    .user_timer
+                    .pending
+                    .iter()
+                    .filter(|pending| pending.timer_id == timer_id)
+                    .count();
+                let mut description = timer.notification.clone();
+                if queued > 0 {
+                    description.push_str(&format!(" · {queued} queued"));
+                }
+                if timer.dropped > 0 {
+                    description.push_str(&format!(" · {} dropped", timer.dropped));
+                }
+                if let Some(error) = &timer.last_delivery_error {
+                    description.push_str(&format!(" · last delivery error: {error}"));
+                }
+                let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                    tx.send(AppEvent::CancelUserTimer { timer_id });
+                })];
+                SelectionItem {
+                    name: format!("Timer #{timer_id} · {schedule}"),
+                    description: Some(description),
+                    actions,
+                    dismiss_on_select: true,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let count = self.user_timer.active.len();
+        self.chat_widget.show_selection_view(SelectionViewParams {
+            title: Some("Manage Timers".to_string()),
+            subtitle: Some(format!("{count} active. Select a timer to cancel it.")),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+    }
+
+    pub(super) fn cancel_user_timer(&mut self, timer_id: u64) {
+        let stopped = self.user_timer.stop_timer(timer_id);
+        let title = if stopped {
+            format!("Timer #{timer_id} stopped.")
+        } else {
+            format!("Timer #{timer_id} is no longer active.")
+        };
+        self.chat_widget.add_info_message(
+            title,
+            Some("Any timer notification turn already running is not interrupted.".to_string()),
+        );
     }
 
     pub(super) fn cancel_user_timer_if_primary_changed(&mut self, thread_id: ThreadId) {
@@ -242,22 +322,23 @@ impl App {
     }
 
     pub(super) fn cancel_user_timer_for_thread(&mut self, thread_id: ThreadId) {
-        if self
+        let timer_ids = self
             .user_timer
             .active
-            .as_ref()
-            .is_some_and(|timer| timer.thread_id == thread_id)
-        {
-            self.user_timer.stop();
+            .iter()
+            .filter_map(|timer| (timer.thread_id == thread_id).then_some(timer.timer_id))
+            .collect::<Vec<_>>();
+        for timer_id in timer_ids {
+            self.user_timer.stop_timer(timer_id);
         }
     }
 
     pub(super) async fn handle_user_timer_tick(
         &mut self,
         app_server: &mut AppServerSession,
-        generation: u64,
+        timer_id: u64,
     ) {
-        if self.user_timer.enqueue_tick(generation) {
+        if self.user_timer.enqueue_tick(timer_id) {
             self.maybe_start_next_user_timer_notification(app_server)
                 .await;
         }
@@ -273,8 +354,8 @@ impl App {
         let (thread_id, mode) = match self
             .user_timer
             .active
-            .as_ref()
-            .filter(|timer| timer.generation == pending.generation)
+            .iter()
+            .find(|timer| timer.timer_id == pending.timer_id)
         {
             Some(timer) => (timer.thread_id, timer.mode),
             None => {
@@ -283,7 +364,7 @@ impl App {
             }
         };
         if self.primary_thread_id != Some(thread_id) {
-            self.user_timer.stop();
+            self.user_timer.stop_all();
             return;
         }
 
@@ -350,16 +431,16 @@ impl App {
         match response {
             Ok(response) => {
                 self.user_timer.pending.pop_front();
-                self.user_timer.last_delivery_error = None;
-                if mode == TimerMode::Once
-                    && self
-                        .user_timer
-                        .active
-                        .as_ref()
-                        .is_some_and(|timer| timer.generation == pending.generation)
+                if let Some(timer) = self
+                    .user_timer
+                    .active
+                    .iter_mut()
+                    .find(|timer| timer.timer_id == pending.timer_id)
                 {
-                    self.user_timer.active.take();
-                    self.user_timer.next_generation();
+                    timer.last_delivery_error = None;
+                }
+                if mode == TimerMode::Once {
+                    self.user_timer.stop_timer(pending.timer_id);
                 }
                 let turn_id = response.turn.id;
                 let store = Arc::clone(&self.ensure_thread_channel(thread_id).store);
@@ -371,8 +452,20 @@ impl App {
             }
             Err(error) => {
                 let error = format!("{error:#}");
-                let changed = self.user_timer.last_delivery_error.as_deref() != Some(&error);
-                self.user_timer.last_delivery_error = Some(error.clone());
+                let changed = self
+                    .user_timer
+                    .active
+                    .iter()
+                    .find(|timer| timer.timer_id == pending.timer_id)
+                    .is_some_and(|timer| timer.last_delivery_error.as_deref() != Some(&error));
+                if let Some(timer) = self
+                    .user_timer
+                    .active
+                    .iter_mut()
+                    .find(|timer| timer.timer_id == pending.timer_id)
+                {
+                    timer.last_delivery_error = Some(error.clone());
+                }
                 tracing::warn!(thread_id = %thread_id, error, "failed to deliver user timer notification");
                 if changed && primary_is_visible {
                     self.chat_widget.add_error_message(format!(

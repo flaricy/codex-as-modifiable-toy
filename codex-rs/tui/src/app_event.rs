@@ -235,9 +235,14 @@ pub(crate) enum AppEvent {
         args: String,
     },
 
-    /// Deliver one tick from the currently active user timer.
+    /// Cancel one user timer chosen from the timer management popup.
+    CancelUserTimer {
+        timer_id: u64,
+    },
+
+    /// Deliver one tick from an active user timer.
     UserTimerTick {
-        generation: u64,
+        timer_id: u64,
     },
 
     /// Retry delivery after the main thread transitions to idle.
