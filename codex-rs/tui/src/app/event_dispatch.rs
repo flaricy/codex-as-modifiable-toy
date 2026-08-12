@@ -440,10 +440,6 @@ impl App {
             AppEvent::UserTimerTick { generation } => {
                 self.handle_user_timer_tick(app_server, generation).await;
             }
-            AppEvent::UserTimerDrain => {
-                self.maybe_start_next_user_timer_notification(app_server)
-                    .await;
-            }
             AppEvent::CodexOp(op) => {
                 let is_user_turn = matches!(&op, AppCommand::UserTurn { .. });
                 if is_user_turn {

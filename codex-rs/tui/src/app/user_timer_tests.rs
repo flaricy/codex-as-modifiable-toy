@@ -41,7 +41,7 @@ fn rejects_invalid_or_incomplete_commands() {
 }
 
 #[tokio::test]
-async fn stale_ticks_are_ignored_and_queue_is_bounded() {
+async fn stopping_timer_invalidates_generation_and_resets_delivery_status() {
     let mut state = UserTimerState::default();
     let generation = state.next_generation();
     let task = tokio::spawn(std::future::pending::<()>());
@@ -52,12 +52,13 @@ async fn stale_ticks_are_ignored_and_queue_is_bounded() {
         notification: "wake".to_string(),
         task,
     });
+    state.delivered = 3;
+    state.skipped = 2;
+    state.last_delivery_error = Some("not steerable".to_string());
 
-    assert!(!state.enqueue_tick(generation.wrapping_add(1)));
-    for _ in 0..MAX_PENDING_NOTIFICATIONS {
-        assert!(state.enqueue_tick(generation));
-    }
-    assert!(!state.enqueue_tick(generation));
-    assert_eq!(state.pending.len(), MAX_PENDING_NOTIFICATIONS);
-    assert_eq!(state.dropped, 1);
+    assert!(state.stop());
+    assert_ne!(state.generation, generation);
+    assert!(state.active.is_none());
+    assert_eq!(state.delivery_counts(), (0, 0));
+    assert!(state.last_delivery_error.is_none());
 }

@@ -1621,12 +1621,6 @@ impl App {
         app_server: &mut AppServerSession,
         event: ThreadBufferedEvent,
     ) -> Result<()> {
-        let should_drain_user_timer = self.active_thread_id == self.primary_thread_id
-            && matches!(
-                &event,
-                ThreadBufferedEvent::Notification(notification)
-                    if matches!(notification.as_ref(), ServerNotification::TurnCompleted(_))
-            );
         let closed_primary_thread = self.active_thread_id == self.primary_thread_id
             && matches!(
                 &event,
@@ -1687,10 +1681,6 @@ impl App {
         self.handle_thread_event_now(event);
         if closed_primary_thread && let Some(thread_id) = self.primary_thread_id {
             self.cancel_user_timer_for_thread(thread_id);
-        }
-        if should_drain_user_timer {
-            self.maybe_start_next_user_timer_notification(app_server)
-                .await;
         }
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();

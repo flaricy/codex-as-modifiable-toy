@@ -240,9 +240,6 @@ pub(crate) enum AppEvent {
         generation: u64,
     },
 
-    /// Retry delivery after the main thread transitions to idle.
-    UserTimerDrain,
-
     /// Fetch a persistent cross-session message history entry by offset.
     LookupMessageHistoryEntry {
         thread_id: ThreadId,
