@@ -30,6 +30,13 @@ fn request_user_input_tool_includes_questions_schema() {
             defer_loading: None,
             parameters: JsonSchema::object(BTreeMap::from([
                 (
+                    "autoResolutionMs".to_string(),
+                    JsonSchema::number(Some(
+                        "Auto-resolution window in milliseconds, from 60000 to 240000. Defaults to 60000. When the user does not answer in time, the client selects the recommended option, or the first option when none is marked recommended."
+                            .to_string(),
+                    )),
+                ),
+                (
                     "questions".to_string(),
                     JsonSchema::array(
                         JsonSchema::object(
@@ -100,16 +107,14 @@ fn request_user_input_tool_includes_questions_schema() {
                         ),
                     ),
                 ),
-            ]),
-            Some(vec!["questions".to_string()]),
-            Some(false.into())),
+            ]), Some(vec!["questions".to_string()]), Some(false.into())),
             output_schema: None,
         })
     );
 }
 
 #[test]
-fn normalize_request_user_input_tool_args_sets_other_on_every_question() {
+fn normalize_request_user_input_tool_args_defaults_auto_resolution_to_one_minute() {
     let args = RequestUserInputToolArgs {
         questions: vec![RequestUserInputQuestion {
             id: "confirm".to_string(),
@@ -122,6 +127,7 @@ fn normalize_request_user_input_tool_args_sets_other_on_every_question() {
                 description: "Continue.".to_string(),
             }]),
         }],
+        auto_resolution_ms: None,
     };
 
     assert_eq!(
@@ -131,12 +137,13 @@ fn normalize_request_user_input_tool_args_sets_other_on_every_question() {
                 is_other: true,
                 ..args.questions[0].clone()
             }],
+            auto_resolution_ms: Some(DEFAULT_AUTO_RESOLUTION_MS),
         })
     );
 }
 
 #[test]
-fn normalize_request_user_input_tool_args_rejects_missing_options() {
+fn normalize_request_user_input_tool_args_clamps_out_of_range_auto_resolution_ms() {
     let args = RequestUserInputToolArgs {
         questions: vec![RequestUserInputQuestion {
             id: "confirm".to_string(),
@@ -144,13 +151,78 @@ fn normalize_request_user_input_tool_args_rejects_missing_options() {
             question: "Proceed?".to_string(),
             is_other: false,
             is_secret: false,
-            options: None,
+            options: Some(vec![RequestUserInputQuestionOption {
+                label: "Yes (Recommended)".to_string(),
+                description: "Continue.".to_string(),
+            }]),
         }],
+        auto_resolution_ms: Some(MIN_AUTO_RESOLUTION_MS - 1),
     };
 
     assert_eq!(
-        normalize_request_user_input_tool_args(args),
-        Err("request_user_input requires non-empty options for every question".to_string())
+        normalize_request_user_input_tool_args(args.clone()),
+        Ok(RequestUserInputToolArgs {
+            questions: vec![RequestUserInputQuestion {
+                is_other: true,
+                ..args.questions[0].clone()
+            }],
+            auto_resolution_ms: Some(MIN_AUTO_RESOLUTION_MS),
+        })
+    );
+    assert_eq!(
+        normalize_request_user_input_tool_args(RequestUserInputToolArgs {
+            auto_resolution_ms: Some(MAX_AUTO_RESOLUTION_MS + 1),
+            ..args.clone()
+        }),
+        Ok(RequestUserInputToolArgs {
+            questions: vec![RequestUserInputQuestion {
+                is_other: true,
+                ..args.questions[0].clone()
+            }],
+            auto_resolution_ms: Some(MAX_AUTO_RESOLUTION_MS),
+        })
+    );
+}
+
+#[test]
+fn normalize_request_user_input_tool_args_accepts_auto_resolution_boundaries() {
+    let args = RequestUserInputToolArgs {
+        questions: vec![RequestUserInputQuestion {
+            id: "confirm".to_string(),
+            header: "Confirm".to_string(),
+            question: "Proceed?".to_string(),
+            is_other: false,
+            is_secret: false,
+            options: Some(vec![RequestUserInputQuestionOption {
+                label: "Yes (Recommended)".to_string(),
+                description: "Continue.".to_string(),
+            }]),
+        }],
+        auto_resolution_ms: Some(MIN_AUTO_RESOLUTION_MS),
+    };
+
+    assert_eq!(
+        normalize_request_user_input_tool_args(args.clone()),
+        Ok(RequestUserInputToolArgs {
+            questions: vec![RequestUserInputQuestion {
+                is_other: true,
+                ..args.questions[0].clone()
+            }],
+            auto_resolution_ms: Some(MIN_AUTO_RESOLUTION_MS),
+        })
+    );
+    assert_eq!(
+        normalize_request_user_input_tool_args(RequestUserInputToolArgs {
+            auto_resolution_ms: Some(MAX_AUTO_RESOLUTION_MS),
+            ..args.clone()
+        }),
+        Ok(RequestUserInputToolArgs {
+            questions: vec![RequestUserInputQuestion {
+                is_other: true,
+                ..args.questions[0].clone()
+            }],
+            auto_resolution_ms: Some(MAX_AUTO_RESOLUTION_MS),
+        })
     );
 }
 
@@ -177,14 +249,10 @@ fn request_user_input_unavailable_messages_respect_default_mode_feature_flag() {
 fn request_user_input_tool_description_mentions_available_modes() {
     assert_eq!(
         request_user_input_tool_description(&default_available_modes()),
-        "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.".to_string()
+        "Request user input for one to three short questions and wait for the response. If the user does not answer, the client auto-selects the recommended option (or the first option) after 60000 milliseconds. Set autoResolutionMs from 60000 to 240000 to change the timeout. This tool is only available in Plan mode.".to_string()
     );
     assert_eq!(
         request_user_input_tool_description(&default_mode_enabled_available_modes()),
-        "Request user input for one to three short questions and wait for the response. This tool is only available in Default or Plan mode.".to_string()
-    );
-    assert_eq!(
-        request_user_input_tool_description(&[ModeKind::Default]),
-        "Request user input for one to three short questions and wait for the response. This tool is only available in Default mode.".to_string()
+        "Request user input for one to three short questions and wait for the response. If the user does not answer, the client auto-selects the recommended option (or the first option) after 60000 milliseconds. Set autoResolutionMs from 60000 to 240000 to change the timeout. This tool is only available in Default or Plan mode.".to_string()
     );
 }

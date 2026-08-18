@@ -74,7 +74,7 @@ impl RequestUserInputHandler {
         let args = RequestUserInputArgs {
             questions: args.questions,
             is_blocking: mode == ModeKind::Plan,
-            auto_resolution_ms: None,
+            auto_resolution_ms: args.auto_resolution_ms,
         };
         let response = session
             .request_user_input(turn.as_ref(), call_id, args)

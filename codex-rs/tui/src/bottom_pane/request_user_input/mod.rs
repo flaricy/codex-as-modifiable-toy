@@ -68,6 +68,7 @@ const UNANSWERED_CONFIRM_SUBMIT_DESC_SINGULAR: &str = "question";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_PLURAL: &str = "questions";
 const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(/*secs*/ 60);
 const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_secs(/*secs*/ 60);
+const RECOMMENDED_OPTION_SUFFIX: &str = "(Recommended)";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
@@ -280,28 +281,43 @@ impl RequestUserInputOverlay {
     }
 
     fn snooze_auto_resolution(&mut self) {
-        if !self.request.is_blocking {
+        if !self.request.is_blocking || self.request.auto_resolution_ms.is_some() {
             self.auto_resolution_snoozed = true;
         }
     }
 
     fn auto_resolution_timing_at(&self, now: Instant) -> AutoResolutionTiming {
-        // autoResolutionMs is deprecated; isBlocking now controls whether the
-        // request can auto-resolve using the TUI's fixed grace/countdown policy.
-        if self.request.is_blocking || self.auto_resolution_snoozed {
+        if self.auto_resolution_snoozed {
             return AutoResolutionTiming::Disabled;
         }
 
+        let (hidden_grace, visible_countdown) =
+            if let Some(auto_resolution_ms) = self.request.auto_resolution_ms {
+                let total_timeout = Duration::from_millis(auto_resolution_ms);
+                let visible_countdown = total_timeout.min(AUTO_RESOLUTION_VISIBLE_COUNTDOWN);
+                (
+                    total_timeout.saturating_sub(visible_countdown),
+                    visible_countdown,
+                )
+            } else if self.request.is_blocking {
+                return AutoResolutionTiming::Disabled;
+            } else {
+                (
+                    AUTO_RESOLUTION_HIDDEN_GRACE,
+                    AUTO_RESOLUTION_VISIBLE_COUNTDOWN,
+                )
+            };
+
         let elapsed = now.saturating_duration_since(self.request_started_at);
-        if elapsed < AUTO_RESOLUTION_HIDDEN_GRACE {
+        if elapsed < hidden_grace {
             return AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE.saturating_sub(elapsed),
+                remaining: hidden_grace.saturating_sub(elapsed),
             };
         }
-        let visible_elapsed = elapsed.saturating_sub(AUTO_RESOLUTION_HIDDEN_GRACE);
-        if visible_elapsed < AUTO_RESOLUTION_VISIBLE_COUNTDOWN {
+        let visible_elapsed = elapsed.saturating_sub(hidden_grace);
+        if visible_elapsed < visible_countdown {
             return AutoResolutionTiming::VisibleCountdown {
-                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN.saturating_sub(visible_elapsed),
+                remaining: visible_countdown.saturating_sub(visible_elapsed),
             };
         }
         AutoResolutionTiming::Due
@@ -325,7 +341,11 @@ impl RequestUserInputOverlay {
         ) {
             return false;
         }
-        self.submit_empty_auto_resolution(now);
+        if self.request.auto_resolution_ms.is_some() {
+            self.submit_option_auto_resolution(now);
+        } else {
+            self.submit_empty_auto_resolution(now);
+        }
         true
     }
 
@@ -784,6 +804,15 @@ impl RequestUserInputOverlay {
         None
     }
 
+    fn auto_resolution_option_label(question: &ToolRequestUserInputQuestion) -> Option<String> {
+        let options = question.options.as_ref()?;
+        options
+            .iter()
+            .find(|option| option.label.trim_end().ends_with(RECOMMENDED_OPTION_SUFFIX))
+            .or_else(|| options.first())
+            .map(|option| option.label.clone())
+    }
+
     /// Move to the next/previous question, wrapping in either direction.
     fn move_question(&mut self, next: bool) {
         let len = self.question_count();
@@ -936,6 +965,35 @@ impl RequestUserInputOverlay {
     fn submit_empty_auto_resolution(&mut self, now: Instant) {
         self.confirm_unanswered = None;
         let answers: HashMap<String, ToolRequestUserInputAnswer> = HashMap::new();
+        self.app_event_tx.user_input_answer(
+            self.request.turn_id.clone(),
+            ToolRequestUserInputResponse {
+                answers: answers.clone(),
+            },
+        );
+        self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+            history_cell::RequestUserInputResultCell {
+                questions: self.request.questions.clone(),
+                answers,
+                interrupted: false,
+            },
+        )));
+        self.advance_queue_or_complete_at(now);
+    }
+
+    fn submit_option_auto_resolution(&mut self, now: Instant) {
+        self.confirm_unanswered = None;
+        let answers = self
+            .request
+            .questions
+            .iter()
+            .map(|question| {
+                let answers = Self::auto_resolution_option_label(question)
+                    .into_iter()
+                    .collect();
+                (question.id.clone(), ToolRequestUserInputAnswer { answers })
+            })
+            .collect::<HashMap<_, _>>();
         self.app_event_tx.user_input_answer(
             self.request.turn_id.clone(),
             ToolRequestUserInputResponse {
@@ -1735,8 +1793,17 @@ mod tests {
         questions: Vec<ToolRequestUserInputQuestion>,
     ) -> ToolRequestUserInputParams {
         let mut request = request_event(turn_id, questions);
-        request.is_blocking = false;
         request.auto_resolution_ms = Some(60_000);
+        request
+    }
+
+    fn request_event_with_auto_resolution_ms(
+        turn_id: &str,
+        questions: Vec<ToolRequestUserInputQuestion>,
+        auto_resolution_ms: u64,
+    ) -> ToolRequestUserInputParams {
+        let mut request = request_event(turn_id, questions);
+        request.auto_resolution_ms = Some(auto_resolution_ms);
         request
     }
 
@@ -1878,9 +1945,10 @@ mod tests {
     fn auto_resolution_hides_timer_during_grace_period() {
         let (tx, _rx) = test_sender();
         let mut overlay = RequestUserInputOverlay::new(
-            request_event_with_auto_resolution(
+            request_event_with_auto_resolution_ms(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
+                120_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1889,19 +1957,26 @@ mod tests {
         );
         let now = Instant::now();
         overlay.request_started_at = now;
+        let hidden_grace = Duration::from_secs(/*secs*/ 60);
 
         assert_eq!(
             overlay.auto_resolution_timing_at(now),
             AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE
+                remaining: hidden_grace
             }
         );
         assert_eq!(
             overlay.auto_resolution_next_frame_delay_at(now),
-            Some(AUTO_RESOLUTION_HIDDEN_GRACE)
+            Some(hidden_grace)
         );
         assert!(
             !render_snapshot_at(&overlay, Rect::new(0, 0, 120, 16), now).contains("auto-resolves")
+        );
+        assert_eq!(
+            overlay.auto_resolution_timing_at(now + hidden_grace),
+            AutoResolutionTiming::VisibleCountdown {
+                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN
+            }
         );
     }
 
@@ -1923,7 +1998,7 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         let now = Instant::now();
-        overlay.request_started_at = now - AUTO_RESOLUTION_HIDDEN_GRACE;
+        overlay.request_started_at = now;
 
         insta::assert_snapshot!(
             "request_user_input_auto_resolution_countdown",
@@ -1945,7 +2020,7 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         let now = Instant::now();
-        overlay.request_started_at = now - AUTO_RESOLUTION_HIDDEN_GRACE;
+        overlay.request_started_at = now;
         let area = Rect::new(0, 0, 120, 16);
         let mut buf = Buffer::empty(area);
 
@@ -1972,12 +2047,15 @@ mod tests {
     }
 
     #[test]
-    fn auto_resolution_expiry_emits_empty_answer() {
+    fn auto_resolution_expiry_selects_recommended_or_first_option() {
         let (tx, mut rx) = test_sender();
+        let mut recommended_question = question_with_options("q1", "First");
+        recommended_question.options.as_mut().expect("options")[1].label =
+            "Option 2 (Recommended)".to_string();
         let mut overlay = RequestUserInputOverlay::new(
             request_event_with_auto_resolution(
                 "turn-1",
-                vec![question_with_options("q1", "First")],
+                vec![recommended_question, question_with_options("q2", "Second")],
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1985,7 +2063,7 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         let now = Instant::now();
-        let total_timeout = AUTO_RESOLUTION_HIDDEN_GRACE + AUTO_RESOLUTION_VISIBLE_COUNTDOWN;
+        let total_timeout = Duration::from_secs(/*secs*/ 60);
         overlay.request_started_at = now - total_timeout;
 
         assert!(overlay.pre_draw_tick(now));
@@ -1996,7 +2074,23 @@ mod tests {
             panic!("expected UserInputAnswer event");
         };
         assert_eq!(id, "turn-1");
-        assert_eq!(response.answers, HashMap::new());
+        assert_eq!(
+            response.answers,
+            HashMap::from([
+                (
+                    "q1".to_string(),
+                    ToolRequestUserInputAnswer {
+                        answers: vec!["Option 2 (Recommended)".to_string()],
+                    },
+                ),
+                (
+                    "q2".to_string(),
+                    ToolRequestUserInputAnswer {
+                        answers: vec!["Option 1".to_string()],
+                    },
+                ),
+            ])
+        );
 
         let event = rx.try_recv().expect("expected history cell event");
         assert!(
@@ -2019,8 +2113,8 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         let now = Instant::now();
-        let total_timeout = AUTO_RESOLUTION_HIDDEN_GRACE + AUTO_RESOLUTION_VISIBLE_COUNTDOWN;
-        overlay.request_started_at = now - AUTO_RESOLUTION_HIDDEN_GRACE;
+        let total_timeout = Duration::from_secs(/*secs*/ 60);
+        overlay.request_started_at = now;
 
         overlay.handle_key_event(KeyEvent::from(KeyCode::Down));
 
@@ -2046,8 +2140,8 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         let now = Instant::now();
-        let total_timeout = AUTO_RESOLUTION_HIDDEN_GRACE + AUTO_RESOLUTION_VISIBLE_COUNTDOWN;
-        overlay.request_started_at = now - AUTO_RESOLUTION_HIDDEN_GRACE;
+        let total_timeout = Duration::from_secs(/*secs*/ 60);
+        overlay.request_started_at = now;
 
         assert!(overlay.handle_paste("notes".to_string()));
 
@@ -2077,7 +2171,7 @@ mod tests {
             vec![question_with_options("q2", "Second")],
         ));
         let now = Instant::now();
-        let total_timeout = AUTO_RESOLUTION_HIDDEN_GRACE + AUTO_RESOLUTION_VISIBLE_COUNTDOWN;
+        let total_timeout = Duration::from_secs(/*secs*/ 60);
         overlay.request_started_at = now - total_timeout;
 
         assert!(overlay.pre_draw_tick(now));
@@ -2086,8 +2180,8 @@ mod tests {
         assert!(!overlay.auto_resolution_snoozed);
         assert_eq!(
             overlay.auto_resolution_timing_at(now),
-            AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE
+            AutoResolutionTiming::VisibleCountdown {
+                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN
             }
         );
         assert!(!overlay.done);

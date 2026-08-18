@@ -70,10 +70,18 @@ fn call_output_content_and_success(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> {
-    request_user_input_round_trip_for_mode(ModeKind::Plan).await
+    request_user_input_round_trip_for_mode(ModeKind::Plan, None).await
 }
 
-async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_user_input_round_trip_emits_custom_auto_resolution_ms() -> anyhow::Result<()> {
+    request_user_input_round_trip_for_mode(ModeKind::Plan, Some(120_000)).await
+}
+
+async fn request_user_input_round_trip_for_mode(
+    mode: ModeKind,
+    auto_resolution_ms: Option<u64>,
+) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -98,7 +106,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
 
     let call_id = "user-input-call";
     let expected_is_blocking = mode == ModeKind::Plan;
-    let request_args = json!({
+    let mut request_args = json!({
         "questions": [{
             "id": "confirm_path",
             "header": "Confirm",
@@ -112,6 +120,9 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
             }]
         }]
     });
+    if let Some(auto_resolution_ms) = auto_resolution_ms {
+        request_args["autoResolutionMs"] = json!(auto_resolution_ms);
+    }
     let request_args = request_args.to_string();
 
     let first_response = sse(vec![
@@ -163,7 +174,10 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     assert_eq!(request.call_id, call_id);
     assert_eq!(request.questions.len(), 1);
     assert_eq!(request.is_blocking, expected_is_blocking);
-    assert_eq!(request.auto_resolution_ms, None);
+    assert_eq!(
+        request.auto_resolution_ms,
+        Some(auto_resolution_ms.unwrap_or(60_000))
+    );
     assert_eq!(request.questions[0].is_other, true);
     assert!(
         timeout(Duration::from_millis(200), async {
@@ -419,5 +433,5 @@ async fn request_user_input_rejected_in_default_mode_by_default() -> anyhow::Res
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_user_input_round_trip_in_default_mode_with_feature() -> anyhow::Result<()> {
-    request_user_input_round_trip_for_mode(ModeKind::Default).await
+    request_user_input_round_trip_for_mode(ModeKind::Default, None).await
 }

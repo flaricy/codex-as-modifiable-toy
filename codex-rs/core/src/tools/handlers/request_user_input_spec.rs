@@ -11,7 +11,12 @@ pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub(crate) struct RequestUserInputToolArgs {
     pub questions: Vec<RequestUserInputQuestion>,
+    #[serde(rename = "autoResolutionMs")]
+    pub auto_resolution_ms: Option<u64>,
 }
+pub const MIN_AUTO_RESOLUTION_MS: u64 = 60_000;
+pub const DEFAULT_AUTO_RESOLUTION_MS: u64 = MIN_AUTO_RESOLUTION_MS;
+pub const MAX_AUTO_RESOLUTION_MS: u64 = 240_000;
 
 pub fn create_request_user_input_tool(description: String) -> ToolSpec {
     let option_props = BTreeMap::from([
@@ -72,7 +77,14 @@ pub fn create_request_user_input_tool(description: String) -> ToolSpec {
         Some("Questions to show the user. Prefer 1 and do not exceed 3".to_string()),
     );
 
-    let properties = BTreeMap::from([("questions".to_string(), questions_schema)]);
+    let auto_resolution_ms_schema = JsonSchema::number(Some(format!(
+        "Auto-resolution window in milliseconds, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. Defaults to {DEFAULT_AUTO_RESOLUTION_MS}. When the user does not answer in time, the client selects the recommended option, or the first option when none is marked recommended."
+    )));
+
+    let properties = BTreeMap::from([
+        ("questions".to_string(), questions_schema),
+        ("autoResolutionMs".to_string(), auto_resolution_ms_schema),
+    ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: REQUEST_USER_INPUT_TOOL_NAME.to_string(),
@@ -117,13 +129,27 @@ pub(crate) fn normalize_request_user_input_tool_args(
         question.is_other = true;
     }
 
+    let auto_resolution_ms = args
+        .auto_resolution_ms
+        .unwrap_or(DEFAULT_AUTO_RESOLUTION_MS);
+    let clamped_auto_resolution_ms =
+        auto_resolution_ms.clamp(MIN_AUTO_RESOLUTION_MS, MAX_AUTO_RESOLUTION_MS);
+    if clamped_auto_resolution_ms != auto_resolution_ms {
+        tracing::warn!(
+            auto_resolution_ms,
+            clamped_auto_resolution_ms,
+            "clamped request_user_input autoResolutionMs to supported range"
+        );
+    }
+    args.auto_resolution_ms = Some(clamped_auto_resolution_ms);
+
     Ok(args)
 }
 
 pub fn request_user_input_tool_description(available_modes: &[ModeKind]) -> String {
     let allowed_modes = format_allowed_modes(available_modes);
     format!(
-        "Request user input for one to three short questions and wait for the response. This tool is only available in {allowed_modes}."
+        "Request user input for one to three short questions and wait for the response. If the user does not answer, the client auto-selects the recommended option (or the first option) after {DEFAULT_AUTO_RESOLUTION_MS} milliseconds. Set autoResolutionMs from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS} to change the timeout. This tool is only available in {allowed_modes}."
     )
 }
 
