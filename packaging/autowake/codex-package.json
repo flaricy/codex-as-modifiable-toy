@@ -1,6 +1,6 @@
 {
   "layoutVersion": 1,
-  "version": "0.2.4",
+  "version": "0.2.7",
   "target": "x86_64-unknown-linux-gnu",
   "variant": "codex",
   "launcher": "codex",

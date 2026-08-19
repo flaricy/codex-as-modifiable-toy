@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.7 - 2026-08-19
 
 ### Upstream compatibility
 
