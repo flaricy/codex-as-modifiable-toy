@@ -98,7 +98,7 @@ impl ToolRouter {
         mcp: &codex_mcp::McpBinding,
         params: ToolRouterParams<'_>,
         tool_search_handler_cache: &ToolSearchHandlerCache,
-    ) -> Self {
+    ) -> Result<Self, String> {
         build_tool_router(
             turn_context,
             environments,

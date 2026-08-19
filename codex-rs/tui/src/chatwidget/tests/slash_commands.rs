@@ -167,6 +167,28 @@ async fn slash_compact_eagerly_queues_follow_up_before_turn_start() {
 }
 
 #[tokio::test]
+async fn timer_slash_commands_emit_user_timer_events_only() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Timer);
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UserTimerCommand { args }) if args.is_empty()
+    );
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Timer,
+        "30min check training".to_string(),
+        Vec::new(),
+    );
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UserTimerCommand { args }) if args == "30min check training"
+    );
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
 async fn queued_slash_compact_dispatches_after_active_turn() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2098,6 +2120,15 @@ async fn slash_stop_submits_background_terminal_cleanup() {
         rendered.contains("Stopping all background terminals."),
         "expected cleanup confirmation, got {rendered:?}"
     );
+}
+
+#[tokio::test]
+async fn slash_ps_requests_authoritative_background_terminal_list() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Ps);
+
+    assert_matches!(op_rx.try_recv(), Ok(Op::ListBackgroundTerminals));
 }
 
 #[tokio::test]

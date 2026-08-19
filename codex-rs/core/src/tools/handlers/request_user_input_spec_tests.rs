@@ -32,7 +32,7 @@ fn request_user_input_tool_includes_questions_schema() {
                 (
                     "autoResolutionMs".to_string(),
                     JsonSchema::number(Some(
-                        "Optional auto-resolution window in milliseconds, from 60000 to 240000. Include this only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required before continuing. Use 60000 for lightly helpful context and up to 240000 when the answer would materially unblock better work."
+                        "Auto-resolution window in milliseconds, from 60000 to 240000. Defaults to 60000. When the user does not answer in time, the client selects the recommended option, or the first option when none is marked recommended."
                             .to_string(),
                     )),
                 ),
@@ -109,6 +109,35 @@ fn request_user_input_tool_includes_questions_schema() {
                 ),
             ]), Some(vec!["questions".to_string()]), Some(false.into())),
             output_schema: None,
+        })
+    );
+}
+
+#[test]
+fn normalize_request_user_input_args_defaults_auto_resolution_to_one_minute() {
+    let args = RequestUserInputArgs {
+        questions: vec![RequestUserInputQuestion {
+            id: "confirm".to_string(),
+            header: "Confirm".to_string(),
+            question: "Proceed?".to_string(),
+            is_other: false,
+            is_secret: false,
+            options: Some(vec![RequestUserInputQuestionOption {
+                label: "Yes (Recommended)".to_string(),
+                description: "Continue.".to_string(),
+            }]),
+        }],
+        auto_resolution_ms: None,
+    };
+
+    assert_eq!(
+        normalize_request_user_input_args(args.clone()),
+        Ok(RequestUserInputArgs {
+            questions: vec![RequestUserInputQuestion {
+                is_other: true,
+                ..args.questions[0].clone()
+            }],
+            auto_resolution_ms: Some(DEFAULT_AUTO_RESOLUTION_MS),
         })
     );
 }
@@ -231,10 +260,10 @@ fn request_user_input_unavailable_messages_respect_default_mode_feature_flag() {
 fn request_user_input_tool_description_mentions_available_modes() {
     assert_eq!(
         request_user_input_tool_description(&default_available_modes()),
-        "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from 60000 to 240000 milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required. This tool is only available in Plan mode.".to_string()
+        "Request user input for one to three short questions and wait for the response. If the user does not answer, the client auto-selects the recommended option (or the first option) after 60000 milliseconds. Set autoResolutionMs from 60000 to 240000 to change the timeout. This tool is only available in Plan mode.".to_string()
     );
     assert_eq!(
         request_user_input_tool_description(&default_mode_enabled_available_modes()),
-        "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from 60000 to 240000 milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required. This tool is only available in Default or Plan mode.".to_string()
+        "Request user input for one to three short questions and wait for the response. If the user does not answer, the client auto-selects the recommended option (or the first option) after 60000 milliseconds. Set autoResolutionMs from 60000 to 240000 to change the timeout. This tool is only available in Default or Plan mode.".to_string()
     );
 }

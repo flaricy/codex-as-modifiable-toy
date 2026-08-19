@@ -1466,7 +1466,7 @@ pub(crate) async fn built_tools(
     mcp: &codex_mcp::McpBinding,
     step_store: &ExtensionData,
     prepared_recommendations: PreparedToolRecommendations,
-) -> (Vec<ToolInfo>, Arc<ToolRouter>) {
+) -> Result<(Vec<ToolInfo>, Arc<ToolRouter>), CodexErr> {
     let all_mcp_tools = mcp.tools().to_vec();
     let connector_snapshot = mcp.config().connector_snapshot.clone();
 
@@ -1554,23 +1554,26 @@ pub(crate) async fn built_tools(
         &turn_context.config,
         search_tool_enabled(turn_context),
     );
-    let tool_router = Arc::new(ToolRouter::from_context(
-        turn_context,
-        environments,
-        mcp,
-        ToolRouterParams {
-            tool_runtimes: mcp_tool_runtimes,
-            tool_suggest_candidates,
-            extension_tool_executors: extension_tool_executors(sess, step_store),
-            wait_for_environment_tool_config: sess
-                .services
-                .thread_extension_data
-                .get::<crate::WaitForEnvironmentToolConfig>(),
-            dynamic_tools: turn_context.dynamic_tools.as_slice(),
-        },
-        &sess.services.tool_search_handler_cache,
-    ));
-    (all_mcp_tools, tool_router)
+    let tool_router = Arc::new(
+        ToolRouter::from_context(
+            turn_context,
+            environments,
+            mcp,
+            ToolRouterParams {
+                tool_runtimes: mcp_tool_runtimes,
+                tool_suggest_candidates,
+                extension_tool_executors: extension_tool_executors(sess, step_store),
+                wait_for_environment_tool_config: sess
+                    .services
+                    .thread_extension_data
+                    .get::<crate::WaitForEnvironmentToolConfig>(),
+                dynamic_tools: turn_context.dynamic_tools.as_slice(),
+            },
+            &sess.services.tool_search_handler_cache,
+        )
+        .map_err(CodexErr::InvalidRequest)?,
+    );
+    Ok((all_mcp_tools, tool_router))
 }
 
 #[derive(Debug)]

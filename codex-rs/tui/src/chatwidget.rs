@@ -344,6 +344,7 @@ use self::goal_status::GoalStatusState;
 use self::goal_status::goal_status_indicator_from_app_goal;
 mod goal_menu;
 mod ide_context;
+mod user_timer_menu;
 use self::ide_context::IdeContextState;
 mod input_queue;
 use self::input_queue::InputQueueState;
@@ -1393,18 +1394,6 @@ impl ChatWidget {
             &self.config,
             self.session_network_proxy.as_ref(),
         ));
-    }
-
-    pub(crate) fn add_ps_output(&mut self) {
-        let processes = self
-            .unified_exec_processes
-            .iter()
-            .map(|process| history_cell::UnifiedExecProcessDetails {
-                command_display: process.command_display.clone(),
-                recent_chunks: process.recent_chunks.clone(),
-            })
-            .collect();
-        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
     }
 
     fn clean_background_terminals(&mut self) {

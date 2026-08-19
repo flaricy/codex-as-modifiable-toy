@@ -148,6 +148,15 @@ async fn fail_and_terminate_preserves_failure_message() {
 }
 
 #[tokio::test]
+async fn remote_terminate_marks_process_exited() {
+    let process = remote_process(WriteStatus::Accepted, /*terminate_error*/ None).await;
+
+    process.terminate();
+
+    assert!(process.has_exited());
+}
+
+#[tokio::test]
 async fn remote_terminate_confirmed_updates_state_on_success_only() {
     let process = remote_process(
         WriteStatus::Accepted,

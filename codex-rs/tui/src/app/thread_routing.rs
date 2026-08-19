@@ -800,6 +800,18 @@ impl App {
                     .await?;
                 Ok(true)
             }
+            AppCommand::ListBackgroundTerminals => {
+                match app_server.thread_background_terminals_list(thread_id).await {
+                    Ok(terminals) => self.chat_widget.add_ps_output(terminals),
+                    Err(err) => {
+                        tracing::warn!("failed to list background terminals: {err:#}");
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to list background terminals: {err:#}"
+                        ));
+                    }
+                }
+                Ok(true)
+            }
             AppCommand::RunUserShellCommand { command } => {
                 app_server
                     .thread_shell_command(thread_id, command.to_string())
@@ -825,7 +837,7 @@ impl App {
         }
     }
 
-    fn turn_permissions_override_from_config(
+    pub(super) fn turn_permissions_override_from_config(
         config: &Config,
         active_permission_profile: Option<&ActivePermissionProfile>,
         runtime_permission_profile_override: Option<&PermissionProfile>,
@@ -1232,6 +1244,7 @@ impl App {
         presentation: ThreadAttachPresentation,
     ) -> Result<()> {
         let thread_id = session.thread_id;
+        self.cancel_user_timer_if_primary_changed(thread_id);
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
@@ -1608,6 +1621,12 @@ impl App {
         app_server: &mut AppServerSession,
         event: ThreadBufferedEvent,
     ) -> Result<()> {
+        let closed_primary_thread = self.active_thread_id == self.primary_thread_id
+            && matches!(
+                &event,
+                ThreadBufferedEvent::Notification(notification)
+                    if matches!(notification.as_ref(), ServerNotification::ThreadClosed(_))
+            );
         // Capture this before any potential thread switch: we only want to clear
         // the exit marker when the currently active thread acknowledges shutdown.
         let pending_shutdown_exit_completed = matches!(
@@ -1660,6 +1679,9 @@ impl App {
             self.pending_shutdown_exit_thread_id = None;
         }
         self.handle_thread_event_now(event);
+        if closed_primary_thread && let Some(thread_id) = self.primary_thread_id {
+            self.cancel_user_timer_for_thread(thread_id);
+        }
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();
         }

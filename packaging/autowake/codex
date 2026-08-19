@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Launcher for the local/custom Codex build.
+# Forces config/auth/sessions under ~/.our_codex (override with CODEX_HOME).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$ROOT/codex.bin"
+
+if [ ! -x "$BIN" ]; then
+  printf 'codex.bin not found or not executable: %s\n' "$BIN" >&2
+  exit 127
+fi
+
+export CODEX_HOME="${CODEX_HOME:-$HOME/.our_codex}"
+mkdir -p "$CODEX_HOME"
+
+exec "$BIN" "$@"

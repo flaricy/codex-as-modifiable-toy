@@ -817,19 +817,22 @@ async fn preview_session_start_hooks(
 
 fn test_tool_runtime(session: Arc<Session>, turn_context: Arc<TurnContext>) -> ToolCallRuntime {
     let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let router = Arc::new(ToolRouter::from_context(
-        step_context.turn.as_ref(),
-        &step_context.environments,
-        step_context.mcp.as_ref(),
-        crate::tools::router::ToolRouterParams {
-            tool_suggest_candidates: None,
-            tool_runtimes: Vec::new(),
-            extension_tool_executors: Vec::new(),
-            wait_for_environment_tool_config: None,
-            dynamic_tools: turn_context.dynamic_tools.as_slice(),
-        },
-        &Default::default(),
-    ));
+    let router = Arc::new(
+        ToolRouter::from_context(
+            step_context.turn.as_ref(),
+            &step_context.environments,
+            step_context.mcp.as_ref(),
+            crate::tools::router::ToolRouterParams {
+                tool_suggest_candidates: None,
+                tool_runtimes: Vec::new(),
+                extension_tool_executors: Vec::new(),
+                wait_for_environment_tool_config: None,
+                dynamic_tools: turn_context.dynamic_tools.as_slice(),
+            },
+            &Default::default(),
+        )
+        .expect("tool router should build"),
+    );
     let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
     ToolCallRuntime::new(router, session, step_context, tracker)
 }
@@ -10839,6 +10842,88 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
 }
 
 #[tokio::test]
+async fn trigger_turn_mailbox_mail_keeps_the_active_turn() {
+    let (sess, tc, _rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: true,
+        },
+    )
+    .await;
+
+    super::handlers::inter_agent_communication(
+        &sess,
+        "mailbox-submission".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "child update".to_string(),
+            /*trigger_turn*/ true,
+        ),
+        /*parent_turn_id*/ None,
+    )
+    .await;
+
+    let active_turn = sess.active_turn.lock().await;
+    let active_turn_id = active_turn
+        .as_ref()
+        .and_then(|active_turn| active_turn.task.as_ref())
+        .map(|task| task.turn_context.sub_id.as_str());
+    assert_eq!(active_turn_id, Some(tc.sub_id.as_str()));
+    drop(active_turn);
+
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+}
+
+#[tokio::test]
+async fn trigger_turn_mailbox_mail_starts_an_idle_turn() {
+    let (sess, _tc, rx) = make_session_and_context_with_rx().await;
+    let (_startup_prewarm_tx, startup_prewarm_rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        let _ = startup_prewarm_rx.await;
+        Ok(test_model_client_session())
+    });
+    sess.set_session_startup_prewarm(
+        crate::session_startup_prewarm::SessionStartupPrewarmHandle::new(
+            handle,
+            std::time::Instant::now(),
+            crate::client::WEBSOCKET_CONNECT_TIMEOUT,
+        ),
+    )
+    .await;
+
+    super::handlers::inter_agent_communication(
+        &sess,
+        "mailbox-submission".to_string(),
+        InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "child update".to_string(),
+            /*trigger_turn*/ true,
+        ),
+        /*parent_turn_id*/ None,
+    )
+    .await;
+
+    let event = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("idle mailbox message should start a turn")
+        .expect("event channel should remain open");
+    assert!(matches!(
+        event.msg,
+        EventMsg::TurnStarted(TurnStartedEvent { turn_id, .. })
+            if turn_id == "mailbox-submission"
+    ));
+
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+}
+
+#[tokio::test]
 async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
     let (sess, tc, _rx) = make_session_and_context_with_rx().await;
     let communication = InterAgentCommunication::new(
@@ -11099,7 +11184,8 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
         &Default::default(),
-    );
+    )
+    .expect("tool router should build");
     let item = ResponseItem::CustomToolCall {
         id: None,
         status: None,

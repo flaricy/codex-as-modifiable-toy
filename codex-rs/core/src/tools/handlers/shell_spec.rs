@@ -96,17 +96,20 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
     properties.extend(create_approval_parameters(
         options.exec_permission_approvals_enabled,
     ));
+    let description = concat!(
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n",
+        "For finite long-running commands, keep the command in the shell foreground; do not use ",
+        "shell backgrounding such as `&`, `nohup ... &`, or `disown`. Set a short ",
+        "`yield_time_ms` with `on_exit: \"wake\"` so Codex can manage the yielded process as a ",
+        "user-visible background terminal, report completion, and handle lifecycle cleanup."
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
         description: if cfg!(windows) {
-            format!(
-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
-                windows_shell_guidance()
-            )
+            format!("{description}\n\n{}", windows_shell_guidance())
         } else {
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
-                .to_string()
+            description.to_string()
         },
         strict: false,
         defer_loading: None,

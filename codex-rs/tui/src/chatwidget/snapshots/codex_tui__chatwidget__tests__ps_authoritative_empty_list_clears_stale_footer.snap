@@ -1,0 +1,23 @@
+---
+source: tui/src/chatwidget/tests/exec_flow.rs
+expression: "format!(\"before:\\n{before}\\n\\nafter:\\n{after}\\n\\n/ps:\\n{ps_output}\")"
+---
+before:
+  4 background terminals running · /ps to view · /stop to close
+
+
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project
+
+after:
+› Ask Codex to do anything
+
+  gpt-5.6-sol default · /tmp/project
+
+/ps:
+/ps
+
+Background terminals
+
+  • No background terminals running.

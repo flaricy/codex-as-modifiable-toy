@@ -178,11 +178,22 @@ impl ChatWidget {
         submitted_follow_up
     }
 
-    pub(super) fn is_user_turn_pending_or_running(&self) -> bool {
+    pub(crate) fn is_user_turn_pending_or_running(&self) -> bool {
         self.input_queue.user_turn_pending_start
             || self.turn_lifecycle.agent_turn_running
             || self.review.is_review_mode
             || (self.bottom_pane.is_task_running() && self.mcp_startup_status.is_none())
+    }
+
+    pub(crate) fn note_user_timer_turn_started(
+        &mut self,
+        turn_id: String,
+        turn: &AppCommand,
+        notification: String,
+    ) {
+        self.input_queue.user_turn_pending_start = true;
+        self.safety_buffering_prompt = Some(UserMessage::from(notification));
+        self.record_safety_buffering_turn(turn_id, turn);
     }
 
     pub(super) fn only_user_shell_commands_running(&self) -> bool {

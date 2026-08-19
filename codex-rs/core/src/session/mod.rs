@@ -1954,12 +1954,13 @@ impl Session {
             .rollout_thread_trace
             .is_enabled()
             .then(|| message.clone());
+        let trigger_turn = parent_agent_path.is_root();
         let communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
             Vec::new(),
             message,
-            /*trigger_turn*/ false,
+            trigger_turn,
         );
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, self.thread_id);
@@ -3089,7 +3090,7 @@ impl Session {
             prepared_recommendations,
         )
         .or_cancel(cancellation_token)
-        .await?;
+        .await??;
         Ok(Arc::new(StepContext {
             turn: turn_context,
             environments,
@@ -3108,7 +3109,21 @@ impl Session {
         mut communication: InterAgentCommunication,
     ) {
         communication.set_turn_id_if_missing(&turn_context.sub_id);
-        let response_item = communication.to_model_input_item();
+        // Actual OpenAI ciphertext cannot be converted client-side for a cross-provider child.
+        // Preserve that path instead of exposing ciphertext as a plaintext user message.
+        let response_item = if turn_context
+            .provider
+            .capabilities()
+            .encrypted_collaboration_messages
+            || communication.encrypted_content.is_some()
+        {
+            communication.to_model_input_item()
+        } else {
+            self.response_item_from_user_input(vec![UserInput::Text {
+                text: communication.content.clone(),
+                text_elements: Vec::new(),
+            }])
+        };
         let items = self.prepare_conversation_items_for_history(
             turn_context,
             std::slice::from_ref(&response_item),

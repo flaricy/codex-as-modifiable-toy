@@ -4,8 +4,54 @@
 //! exec-cell grouping and unified exec wait state.
 
 use super::*;
+use codex_app_server_protocol::ThreadBackgroundTerminal;
 
 impl ChatWidget {
+    pub(crate) fn add_ps_output(&mut self, terminals: Vec<ThreadBackgroundTerminal>) {
+        let processes = self.reconcile_background_terminals(terminals);
+        self.add_to_history(history_cell::new_unified_exec_processes_output(processes));
+    }
+
+    /// Reconcile the event-derived footer cache with the core process manager without rendering
+    /// a `/ps` history cell. Thread switching uses this after replay so historical process-start
+    /// events cannot resurrect terminals that have already exited.
+    pub(crate) fn reconcile_background_terminals(
+        &mut self,
+        terminals: Vec<ThreadBackgroundTerminal>,
+    ) -> Vec<history_cell::UnifiedExecProcessDetails> {
+        let (authoritative_processes, processes) = terminals
+            .into_iter()
+            .map(|terminal| {
+                let recent_chunks = self
+                    .unified_exec_processes
+                    .iter()
+                    .find(|process| process.key == terminal.process_id)
+                    .map(|process| process.recent_chunks.clone())
+                    .unwrap_or_default();
+                let command = split_command_string(&terminal.command);
+                let command_display = strip_bash_lc_and_escape(&command);
+                (
+                    UnifiedExecProcessSummary {
+                        key: terminal.process_id,
+                        call_id: terminal.item_id,
+                        command_display: command_display.clone(),
+                        recent_chunks: recent_chunks.clone(),
+                    },
+                    history_cell::UnifiedExecProcessDetails {
+                        command_display,
+                        recent_chunks,
+                    },
+                )
+            })
+            .unzip();
+        // The core process manager is authoritative. Reconcile the event-derived cache so a
+        // missed completion event (for example after remote termination) cannot leave a stale
+        // background-terminal count in the footer.
+        self.unified_exec_processes = authoritative_processes;
+        self.sync_unified_exec_footer();
+        processes
+    }
+
     pub(super) fn flush_unified_exec_wait_streak(&mut self) {
         let Some(wait) = self.unified_exec_wait_streak.take() else {
             return;
@@ -255,14 +301,25 @@ impl ChatWidget {
         // Ensure the status indicator is visible while the command runs.
         self.bottom_pane.ensure_status_indicator();
         let parsed_cmd = self.annotate_skill_reads_in_parsed_cmd(parsed_cmd);
-        self.running_commands.insert(
-            id.clone(),
-            RunningCommand {
-                command: command.clone(),
-                parsed_cmd: parsed_cmd.clone(),
-                source,
-            },
-        );
+        let already_running = self
+            .running_commands
+            .insert(
+                id.clone(),
+                RunningCommand {
+                    command: command.clone(),
+                    parsed_cmd: parsed_cmd.clone(),
+                    source,
+                },
+            )
+            .is_some();
+        if already_running {
+            // Approval flows may first publish a provisional Agent command item and later
+            // re-publish the canonical unified-exec item with its process ID. The outer handler
+            // has already used the canonical item to update the terminal footer; avoid rendering
+            // the same command twice in the active exec cell.
+            self.request_redraw();
+            return;
+        }
         let is_wait_interaction = matches!(source, ExecCommandSource::UnifiedExecInteraction);
         let command_display = command.join(" ");
         let should_suppress_unified_wait = is_wait_interaction

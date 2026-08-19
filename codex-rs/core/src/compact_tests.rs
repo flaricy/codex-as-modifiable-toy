@@ -282,6 +282,7 @@ fn should_use_remote_compact_task_for_azure_provider() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        namespace_tools: None,
     };
 
     assert!(should_use_remote_compact_task(&provider));

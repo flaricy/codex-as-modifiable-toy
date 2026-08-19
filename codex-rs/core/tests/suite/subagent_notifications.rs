@@ -1421,6 +1421,7 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(plaintext: bool) -> R
     let spawn_args = serde_json::to_string(&json!({
         "message": message,
         "task_name": "worker",
+        "fork_turns": "none",
     }))?;
     let mut spawn_event = ev_function_call_with_namespace(
         SPAWN_CALL_ID,
@@ -1575,6 +1576,277 @@ async fn multi_agent_v2_spawn_sends_agent_message_to_child(plaintext: bool) -> R
     Ok(())
 }
 
+#[tokio::test]
+async fn multi_agent_v2_spawn_uses_user_message_for_non_openai_provider() -> Result<()> {
+    let server = start_mock_server().await;
+    let message = "custom-provider delegated task";
+    let expected_message = format!(
+        "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n{message}"
+    );
+    let spawn_args = serde_json::to_string(&json!({
+        "message": message,
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+    let expected_child_message = expected_message.clone();
+    let child_request_log = mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, &expected_child_message),
+        sse(vec![
+            ev_response_created("resp-child-1"),
+            ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-parent-2"),
+            ev_assistant_message("msg-parent-2", "done"),
+            ev_completed("resp-parent-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config.model_provider.name = "Custom Responses Provider".to_string();
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let child_request = loop {
+        if let Some(request) = child_request_log
+            .requests()
+            .into_iter()
+            .find(|request| request.body_contains_text(&expected_message))
+        {
+            break request;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for child user message request");
+        }
+        sleep(Duration::from_millis(10)).await;
+    };
+    assert!(child_request.inputs_of_type("agent_message").is_empty());
+    assert!(
+        child_request
+            .message_input_texts("user")
+            .contains(&expected_message)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_messages_use_user_input_for_non_openai_provider() -> Result<()> {
+    let server = start_mock_server().await;
+    let initial_task = "custom-provider initial task";
+    let queued_message = "custom-provider queued message";
+    let followup_message = "custom-provider follow-up task";
+    let queue_prompt = "queue a message for the custom-provider child";
+    let followup_prompt = "wake the custom-provider child with a follow-up";
+    let send_call_id = "custom-provider-send-call";
+    let followup_call_id = "custom-provider-followup-call";
+    let expected_queued_message = format!(
+        "Message Type: MESSAGE\nTask name: /root/worker\nSender: /root\nPayload:\n{queued_message}"
+    );
+    let expected_followup_message = format!(
+        "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n{followup_message}"
+    );
+
+    let spawn_args = serde_json::to_string(&json!({
+        "message": initial_task,
+        "task_name": "worker",
+        "fork_turns": "none",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-parent-spawn-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-parent-spawn-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            body_contains(req, initial_task) && body_contains(req, "x-codex-parent-thread-id")
+        },
+        sse(vec![
+            ev_response_created("resp-child-initial"),
+            ev_assistant_message("msg-child-initial", "initial child task complete"),
+            ev_completed("resp-child-initial"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-parent-spawn-2"),
+            ev_assistant_message("msg-parent-spawn-2", "spawned"),
+            ev_completed("resp-parent-spawn-2"),
+        ]),
+    )
+    .await;
+
+    let send_args = serde_json::to_string(&json!({
+        "target": "worker",
+        "message": queued_message,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, queue_prompt),
+        sse(vec![
+            ev_response_created("resp-parent-send-1"),
+            ev_function_call_with_namespace(
+                send_call_id,
+                MULTI_AGENT_V2_NAMESPACE,
+                "send_message",
+                &send_args,
+            ),
+            ev_completed("resp-parent-send-1"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, send_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-send-2"),
+            ev_assistant_message("msg-parent-send-2", "queued"),
+            ev_completed("resp-parent-send-2"),
+        ]),
+    )
+    .await;
+
+    let followup_args = serde_json::to_string(&json!({
+        "target": "worker",
+        "message": followup_message,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, followup_prompt),
+        sse(vec![
+            ev_response_created("resp-parent-followup-1"),
+            ev_function_call_with_namespace(
+                followup_call_id,
+                MULTI_AGENT_V2_NAMESPACE,
+                "followup_task",
+                &followup_args,
+            ),
+            ev_completed("resp-parent-followup-1"),
+        ]),
+    )
+    .await;
+    let expected_queued_child_message = expected_queued_message.clone();
+    let expected_followup_child_message = expected_followup_message.clone();
+    let child_request_log = mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            body_contains(req, &expected_queued_child_message)
+                && body_contains(req, &expected_followup_child_message)
+        },
+        sse(vec![
+            ev_response_created("resp-child-followup"),
+            ev_assistant_message("msg-child-followup", "follow-up complete"),
+            ev_completed("resp-child-followup"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, followup_call_id),
+        sse(vec![
+            ev_response_created("resp-parent-followup-2"),
+            ev_assistant_message("msg-parent-followup-2", "follow-up sent"),
+            ev_completed("resp-parent-followup-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config.model_provider.name = "Custom Responses Provider".to_string();
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build(&server).await?;
+    let root_thread_id = test.session_configured.thread_id;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let child_thread_id = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|thread_id| *thread_id != root_thread_id)
+        .expect("child thread ID");
+    let child_thread = test.thread_manager.get_thread(child_thread_id).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !matches!(child_thread.agent_status().await, AgentStatus::Completed(_)) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+
+    test.submit_turn(queue_prompt).await?;
+    test.submit_turn(followup_prompt).await?;
+
+    let child_request = wait_for_requests(&child_request_log)
+        .await?
+        .into_iter()
+        .find(|request| {
+            let user_messages = request.message_input_texts("user");
+            user_messages.contains(&expected_queued_message)
+                && user_messages.contains(&expected_followup_message)
+        })
+        .expect("child follow-up user message request");
+    assert!(child_request.inputs_of_type("agent_message").is_empty());
+    let user_messages = child_request.message_input_texts("user");
+    assert!(user_messages.contains(&expected_queued_message));
+    assert!(user_messages.contains(&expected_followup_message));
+
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum CompletionScenario {
     Completed,
@@ -1720,6 +1992,119 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             }],
         })])
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_final_answer_uses_user_input_for_non_openai_provider() -> Result<()> {
+    let server = start_mock_server().await;
+    let initial_task = "custom-provider completion task";
+    let child_answer = "custom-provider child done";
+    let notification = format!(
+        "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n{child_answer}"
+    );
+    let spawn_args = serde_json::to_string(&json!({
+        "message": initial_task,
+        "task_name": "worker",
+        "fork_turns": "none",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-custom-parent-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-custom-parent-1"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            body_contains(req, initial_task) && body_contains(req, "x-codex-parent-thread-id")
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-custom-child-1"),
+            ev_assistant_message("msg-custom-child-1", child_answer),
+            ev_completed("resp-custom-child-1"),
+        ]))
+        .set_delay(Duration::from_secs(1)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID) && !body_contains(req, "Message Type: FINAL_ANSWER")
+        },
+        sse(vec![
+            ev_response_created("resp-custom-parent-2"),
+            ev_assistant_message("msg-custom-parent-2", "parent done"),
+            ev_completed("resp-custom-parent-2"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_2_NO_WAIT_PROMPT)
+                && !body_contains(req, "Message Type: FINAL_ANSWER")
+        },
+        sse(vec![
+            ev_response_created("resp-custom-parent-3"),
+            ev_function_call_with_namespace(
+                "custom-wait-agent-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "wait_agent",
+                "{}",
+            ),
+            ev_completed("resp-custom-parent-3"),
+        ]),
+    )
+    .await;
+    let expected_notification = notification.clone();
+    let final_answer_request = mount_sse_once_match(
+        &server,
+        move |req: &wiremock::Request| body_contains(req, &expected_notification),
+        sse(vec![
+            ev_response_created("resp-custom-parent-4"),
+            ev_assistant_message("msg-custom-parent-4", "done"),
+            ev_completed("resp-custom-parent-4"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config.model_provider.name = "Custom Responses Provider".to_string();
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(0);
+        config.model_provider.supports_websockets = false;
+    });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
+
+    let request = wait_for_requests(&final_answer_request)
+        .await?
+        .into_iter()
+        .find(|request| request.message_input_texts("user").contains(&notification))
+        .expect("final answer user message request");
+    assert!(request.inputs_of_type("agent_message").is_empty());
 
     Ok(())
 }
