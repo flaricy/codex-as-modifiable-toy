@@ -18,7 +18,7 @@
 # Differences from https://cdn.deepseek.com/api-docs/codex-deepseek-setup.sh :
 #   - targets ~/.our_codex by default (not ~/.codex)
 #   - stores API key via auth.command (set-deepseek-key), never in config.toml
-#   - sets requires_openai_auth / uses_openai_backend for custom Codex builds
+#   - disables OpenAI auth and namespace-wrapped tools for the DeepSeek provider
 #   - writes [agents].max_concurrent_threads_per_session (default 5)
 #   - forces models.json deepseek-v4-flash.supports_search_tool = false
 #   - leaves plugins / marketplaces untouched
@@ -28,7 +28,7 @@ set -uo pipefail
 {
 trap 'printf "\n已取消。\n"; exit 130' INT
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLASH_SLUG="deepseek-v4-flash"
 PRO_SLUG="deepseek-v4-pro"
@@ -323,15 +323,14 @@ _in_list() {
   return 1
 }
 
-TARGET_KEYS="model model_provider preferred_auth_method forced_login_method model_reasoning_effort model_catalog_json review_model"
-DEL_A="profile oss_provider openai_base_url"
+TARGET_KEYS="model model_provider forced_login_method model_reasoning_effort model_catalog_json review_model"
+DEL_A="profile oss_provider openai_base_url preferred_auth_method"
 DEL_B="model_context_window model_auto_compact_token_limit model_auto_compact_token_limit_scope base_instructions model_instructions_file compact_prompt experimental_compact_prompt_file service_tier model_verbosity model_reasoning_summary plan_mode_reasoning_effort experimental_use_unified_exec_tool"
 
 target_value_for() {
   case "$1" in
     model)                   printf '%s' "\"$MODEL_SLUG\"" ;;
     model_provider)          printf '%s' "\"$PROVIDER_ID\"" ;;
-    preferred_auth_method)   printf '%s' '"apikey"' ;;
     forced_login_method)     printf '%s' '"api"' ;;
     model_reasoning_effort)  printf '%s' '"high"' ;;
     model_catalog_json)      printf '%s' "\"$CATALOG_VALUE\"" ;;
@@ -639,7 +638,7 @@ PY
     printf 'base_url = "%s"\n' "$DEFAULT_BASE_URL"
     printf 'wire_api = "responses"\n'
     printf 'requires_openai_auth = false\n'
-    printf 'uses_openai_backend = false\n'
+    printf 'namespace_tools = false\n'
     printf '\n'
     printf '# API key is NOT stored in this file. Add it with:\n'
     printf '#   %s\n' "$SET_KEY_CMD"
@@ -662,13 +661,17 @@ with open(sys.argv[1], 'rb') as f:
     c = tomllib.load(f)
 assert c.get('model') == sys.argv[2]
 assert c.get('model_provider') == 'deepseek'
+assert 'preferred_auth_method' not in c
 assert c.get('model_catalog_json')
 assert 'deepseek' in c.get('model_providers', {})
+provider = (c.get('model_providers') or {}).get('deepseek', {})
+assert provider.get('requires_openai_auth') is False
+assert provider.get('namespace_tools') is False
 agents = c.get('agents') or {}
 assert int(agents.get('max_concurrent_threads_per_session', -1)) == int(sys.argv[3])
-auth = (c.get('model_providers') or {}).get('deepseek', {}).get('auth') or {}
+auth = provider.get('auth') or {}
 assert auth.get('command'), 'auth.command missing'
-assert 'experimental_bearer_token' not in (c.get('model_providers') or {}).get('deepseek', {})
+assert 'experimental_bearer_token' not in provider
 PY
     rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -740,7 +743,6 @@ print_summary() {
   cat <<EOF
   model                                     = "$MODEL_SLUG"
   model_provider                            = "$PROVIDER_ID"
-  preferred_auth_method                     = "apikey"
   forced_login_method                       = "api"
   model_reasoning_effort                    = "high"
   model_catalog_json                        = "$CATALOG_VALUE"
@@ -750,7 +752,7 @@ print_summary() {
   base_url             = "$DEFAULT_BASE_URL"
   wire_api             = "responses"
   requires_openai_auth = false
-  uses_openai_backend  = false
+  namespace_tools      = false
   auth.command         = "$READ_KEY_CMD"
 
   models.json
