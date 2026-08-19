@@ -10764,6 +10764,7 @@ async fn trigger_turn_mailbox_mail_keeps_the_active_turn() {
             /*trigger_turn*/ true,
         ),
         /*parent_turn_id*/ None,
+        /*root_turn_id*/ None,
     )
     .await;
 
@@ -10806,6 +10807,7 @@ async fn trigger_turn_mailbox_mail_starts_an_idle_turn() {
             /*trigger_turn*/ true,
         ),
         /*parent_turn_id*/ None,
+        /*root_turn_id*/ None,
     )
     .await;
 

@@ -68,20 +68,20 @@ use codex_protocol::account::PlanType;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
-use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_tools::NamespaceToolSpecMode;
 use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironmentMode;
-use codex_tools::NamespaceToolSpecMode;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolExposures;
 use codex_tools::ToolName;
@@ -93,10 +93,10 @@ use codex_tools::collect_code_mode_exec_prompt_tool_definitions;
 use codex_tools::collect_request_plugin_install_entries;
 use codex_tools::default_namespace_description;
 use codex_tools::request_user_input_available_modes;
+use codex_tools::serialize_tool_specs;
 use codex_tools::shell_command_backend_for_features;
 use codex_tools::shell_type_for_model_and_features;
 use futures::future::BoxFuture;
-use codex_tools::serialize_tool_specs;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -683,9 +683,9 @@ fn validate_flattened_model_visible_names(specs: &[ToolSpec]) -> Result<(), Stri
         let name = match spec {
             ToolSpec::Function(tool) => tool.name.as_str(),
             ToolSpec::Freeform(tool) => tool.name.as_str(),
-            ToolSpec::Namespace(_)
-            | ToolSpec::ToolSearch { .. }
-            | ToolSpec::WebSearch { .. } => continue,
+            ToolSpec::Namespace(_) | ToolSpec::ToolSearch { .. } | ToolSpec::WebSearch { .. } => {
+                continue;
+            }
         };
         *counts.entry(name).or_default() += 1;
     }

@@ -387,8 +387,8 @@ impl ToolRegistry {
             if tool_name.is_default_namespace() {
                 continue;
             }
-            let flat_alias =
-                ToolName::plain(tool_name.canonical_flat_name().into_owned()).with_default_namespace();
+            let flat_alias = ToolName::plain(tool_name.canonical_flat_name().into_owned())
+                .with_default_namespace();
             if suppressed_flat_aliases.contains(flat_alias.name.as_str()) {
                 continue;
             }
@@ -400,8 +400,7 @@ impl ToolRegistry {
                     flat_alias.name
                 ));
             }
-            self.flat_tool_aliases
-                .insert(flat_alias, tool_name.clone());
+            self.flat_tool_aliases.insert(flat_alias, tool_name.clone());
         }
         Ok(())
     }
@@ -555,9 +554,7 @@ impl ToolRegistry {
 
         let dispatch_trace = ToolDispatchTrace::start(&invocation);
         let (resolved_tool_name, tool) = match self.resolved_tool(&tool_name) {
-            Some((resolved_tool_name, tool)) => {
-                (resolved_tool_name, Arc::clone(&tool.runtime))
-            }
+            Some((resolved_tool_name, tool)) => (resolved_tool_name, Arc::clone(&tool.runtime)),
             None => {
                 let message = unsupported_tool_call_message(&invocation.payload, &tool_name);
                 let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
@@ -873,7 +870,7 @@ fn add_model_visible_flat_alias(
     requested_tool_name: &ToolName,
     resolved_tool_name: &ToolName,
 ) {
-    if requested_tool_name.namespace.is_none() && requested_tool_name != resolved_tool_name {
+    if requested_tool_name.is_default_namespace() && requested_tool_name != resolved_tool_name {
         hook_tool_name.add_matcher_alias(requested_tool_name.name.clone());
     }
 }

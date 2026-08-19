@@ -12,8 +12,8 @@ use bm25::Document;
 use bm25::Language;
 use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
-use codex_tools::NamespaceToolSpecMode;
 use codex_tools::LoadableToolSpec;
+use codex_tools::NamespaceToolSpecMode;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
@@ -50,17 +50,14 @@ enum ToolSearchSource {
 }
 
 impl ToolSearchHandlerCache {
+    #[cfg(test)]
     #[instrument(level = "trace", skip_all)]
     pub(crate) fn get_or_build(
         &self,
         registry: &ToolRegistry,
         source_listing: ToolSearchSourceListing,
     ) -> Arc<ToolSearchHandler> {
-        self.get_or_build_with_mode(
-            registry,
-            source_listing,
-            NamespaceToolSpecMode::Preserve,
-        )
+        self.get_or_build_with_mode(registry, source_listing, NamespaceToolSpecMode::Preserve)
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -152,6 +149,7 @@ impl ToolSearchHandlerCache {
 }
 
 impl ToolSearchHandler {
+    #[cfg(test)]
     #[instrument(
         level = "trace",
         skip_all,

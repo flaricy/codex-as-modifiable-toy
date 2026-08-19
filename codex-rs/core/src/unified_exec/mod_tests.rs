@@ -325,6 +325,7 @@ async fn list_processes_excludes_exec_server_process_after_terminate() -> anyhow
         process_id,
         ProcessEntry {
             process: Arc::clone(&process),
+            plugin_metrics_sidecar: None,
             call_id: call_id.clone(),
             process_id,
             cwd: cwd.clone(),

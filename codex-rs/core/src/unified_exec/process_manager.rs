@@ -536,7 +536,7 @@ impl UnifiedExecProcessManager {
         let completion_wakeup =
             (process_started_alive && request.on_exit == ExecCommandOnExit::Wake).then(|| {
                 CompletionWakeRegistration::new(
-                    process.output_handles().output_buffer,
+                    process.output_handles().output_buffer.clone(),
                     Arc::downgrade(&context.session),
                     context.call_id.clone(),
                     request.process_id,

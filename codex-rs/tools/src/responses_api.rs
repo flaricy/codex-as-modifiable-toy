@@ -115,7 +115,8 @@ pub fn coalesce_loadable_tool_specs(
                         {
                             Some(existing_namespace)
                         }
-                        LoadableToolSpec::Function(_) | LoadableToolSpec::Custom(_)
+                        LoadableToolSpec::Function(_)
+                        | LoadableToolSpec::Custom(_)
                         | LoadableToolSpec::Namespace(_) => None,
                     })
                 {

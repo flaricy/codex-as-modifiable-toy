@@ -395,7 +395,7 @@ fn suppressed_flat_aliases_keep_logical_runtimes_registered() {
     let mut registry = ToolRegistry::from_tools([first_handler, second_handler]);
     registry
         .configure_flat_aliases(&std::collections::BTreeSet::from([
-            "agents__spawn_agent".to_string(),
+            "agents__spawn_agent".to_string()
         ]))
         .expect("suppressed aliases should not collide");
 
@@ -414,7 +414,7 @@ fn suppressed_flat_aliases_keep_logical_runtimes_registered() {
 
 #[test]
 fn flattened_model_visible_name_is_only_a_hook_matcher_alias() {
-    let requested_tool_name = codex_tools::ToolName::plain("web__run");
+    let requested_tool_name = codex_tools::ToolName::plain("web__run").with_default_namespace();
     let resolved_tool_name = codex_tools::ToolName::namespaced("web", "run");
     let mut hook_tool_name = HookToolName::new("webrun");
 
